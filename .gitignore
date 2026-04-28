@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.omc/
+.claude/
+.trae/
+_measure_*
+_dify_trial*
+_dify_probe*
+_dify_metadata_filter_probe*
+_deepseek_test.py
+_rename_integration_docs.py
+配置文件.chanfengdikongzl.json
+配置文件.xinweiduzl.json

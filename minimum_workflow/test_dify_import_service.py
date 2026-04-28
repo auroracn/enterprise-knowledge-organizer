@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from minimum_workflow import dify_import_service
 from minimum_workflow.dify_import_service import (
     DifyClient,
     DifyRuntime,
     collect_batch_snapshot,
+    list_batch_states,
+    load_batch_state,
     resolve_dify_runtime,
     write_batch_state,
 )
@@ -142,6 +145,21 @@ def test_collect_batch_snapshot_groups_pending_ready_and_history(tmp_path: Path)
     assert {item["sample_id"] for item in snapshot["history_items"]} == {"imported_sample"}
 
 
+def test_list_batch_states_recovers_state_when_state_file_is_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(dify_import_service, "UI_BATCHES_DIR", tmp_path)
+    batch_dir = tmp_path / "batch_missing_state"
+    structured_output_dir = batch_dir / "structured_outputs"
+    structured_output_dir.mkdir(parents=True)
+
+    states = list_batch_states()
+    state = load_batch_state(batch_dir)
+
+    assert len(states) == 1
+    assert states[0]["batch_id"] == "batch_missing_state"
+    assert states[0]["status"] == "recovered"
+    assert state["structured_output_dir"] == str(structured_output_dir)
+
+
 class _FakeResponse:
     def __init__(self, status_code: int, payload: dict | None = None, text: str | None = None) -> None:
         self.status_code = status_code
@@ -244,6 +262,32 @@ def test_resolve_dify_runtime_accepts_http_url() -> None:
     )
     assert runtime is not None
     assert runtime.api_url == "http://192.168.110.78:17001/v1"
+
+
+def test_resolve_dify_runtime_ignores_unresolved_dataset_placeholder(monkeypatch) -> None:
+    monkeypatch.delenv("DIFY_DEFAULT_DATASET_IDS", raising=False)
+
+    runtime = resolve_dify_runtime(
+        api_url="http://192.168.110.78:17001/v1",
+        api_key="secret",
+        default_dataset_ids="${DIFY_DEFAULT_DATASET_IDS}",
+    )
+
+    assert runtime is not None
+    assert runtime.default_dataset_ids == []
+
+
+def test_resolve_dify_runtime_expands_dataset_placeholder(monkeypatch) -> None:
+    monkeypatch.setenv("DIFY_DEFAULT_DATASET_IDS", "dataset-a, dataset-b")
+
+    runtime = resolve_dify_runtime(
+        api_url="http://192.168.110.78:17001/v1",
+        api_key="secret",
+        default_dataset_ids="${DIFY_DEFAULT_DATASET_IDS}",
+    )
+
+    assert runtime is not None
+    assert runtime.default_dataset_ids == ["dataset-a", "dataset-b"]
 
 
 def test_ensure_category_bound_returns_warning_on_tag_schema_error() -> None:

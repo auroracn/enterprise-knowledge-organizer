@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,6 +82,15 @@ def _split_csv_ids(raw_value: str | list[str] | tuple[str, ...] | None) -> list[
     result: list[str] = []
     seen: set[str] = set()
     for item in raw_items:
+        placeholder_match = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", item)
+        if placeholder_match:
+            env_value = os.getenv(placeholder_match.group(1), "")
+            for expanded_item in _split_csv_ids(env_value):
+                if expanded_item in seen:
+                    continue
+                seen.add(expanded_item)
+                result.append(expanded_item)
+            continue
         if not item or item in seen:
             continue
         seen.add(item)
@@ -164,20 +175,66 @@ def write_batch_state(batch_dir: Path | str, payload: dict[str, Any]) -> Path:
 def load_batch_state(batch_dir: Path | str) -> dict[str, Any]:
     target = batch_state_path(batch_dir)
     if not target.exists():
+        recovered = _recover_batch_state(Path(batch_dir))
+        if recovered is not None:
+            return recovered
         raise FileNotFoundError(f"未找到批次状态文件: {target}")
     return json.loads(target.read_text(encoding="utf-8"))
+
+
+def _recover_batch_state(batch_dir: Path) -> dict[str, Any] | None:
+    structured_output_dir = batch_dir / "structured_outputs"
+    review_output_dir = batch_dir / "review_markdown"
+    try:
+        has_recoverable_content = structured_output_dir.is_dir() or review_output_dir.is_dir()
+    except OSError:
+        return None
+    if not has_recoverable_content:
+        return None
+    try:
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(batch_dir.stat().st_ctime))
+    except OSError:
+        created_at = ""
+    return {
+        "batch_id": batch_dir.name,
+        "display_name": f"{batch_dir.name} | recovered",
+        "created_at": created_at,
+        "source_mode": "unknown",
+        "status": "recovered",
+        "input_dir": str(batch_dir / "input"),
+        "review_output_dir": str(review_output_dir),
+        "structured_output_dir": str(structured_output_dir),
+        "scan_report_path": str(structured_output_dir / "scan_report.json"),
+        "batch_dir": str(batch_dir),
+    }
 
 
 def list_batch_states(profile: str | None = None) -> list[dict[str, Any]]:
     base = ensure_ui_batches_dir(profile)
     states: list[dict[str, Any]] = []
+    seen_dirs: set[Path] = set()
     for state_file in base.glob(f"*/{BATCH_STATE_FILE_NAME}"):
         try:
             payload = json.loads(state_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         payload["batch_dir"] = str(state_file.parent)
+        seen_dirs.add(state_file.parent.resolve())
         states.append(payload)
+    try:
+        batch_dirs = [path for path in base.iterdir() if path.is_dir()]
+    except OSError:
+        batch_dirs = []
+    for batch_dir in batch_dirs:
+        try:
+            resolved_batch_dir = batch_dir.resolve()
+        except OSError:
+            continue
+        if resolved_batch_dir in seen_dirs:
+            continue
+        recovered = _recover_batch_state(batch_dir)
+        if recovered is not None:
+            states.append(recovered)
     return sorted(states, key=lambda item: str(item.get("created_at", "")), reverse=True)
 
 

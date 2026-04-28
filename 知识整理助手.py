@@ -26,6 +26,7 @@ import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as html_to_markdown
 from minimum_workflow.dify_import_service import (
+    BATCH_STATE_FILE_NAME,
     DifyClient,
     DifyRuntime,
     build_batch_choices,
@@ -696,23 +697,71 @@ def _iter_batch_dirs(profile: str | None = None) -> list[Path]:
     base = ensure_ui_batches_dir(profile)
     if not base.exists():
         return []
-    return sorted(
-        [p for p in base.iterdir() if p.is_dir()],
-        key=lambda p: p.stat().st_ctime,
-        reverse=True,
-    )
+    batch_dirs: list[Path] = []
+    try:
+        candidates = list(base.iterdir())
+    except OSError:
+        return []
+    for path in candidates:
+        try:
+            if path.is_dir():
+                batch_dirs.append(path)
+        except OSError:
+            continue
+    def _safe_ctime(path: Path) -> float:
+        try:
+            return path.stat().st_ctime
+        except OSError:
+            return 0
+
+    return sorted(batch_dirs, key=_safe_ctime, reverse=True)
+
+
+def _scan_unreadable_batch_dirs(profile: str | None = None) -> tuple[int, int]:
+    base = ensure_ui_batches_dir(profile)
+    missing_state = 0
+    unreadable = 0
+    try:
+        candidates = list(base.iterdir())
+    except OSError:
+        return 0, 1
+    for path in candidates:
+        try:
+            if not path.is_dir():
+                continue
+            list(path.iterdir())
+        except OSError:
+            unreadable += 1
+            continue
+        state_path = path / BATCH_STATE_FILE_NAME
+        try:
+            has_state = state_path.is_file()
+        except OSError:
+            unreadable += 1
+            continue
+        if not has_state:
+            missing_state += 1
+    return missing_state, unreadable
 
 
 def _calc_dir_stats(root: Path) -> tuple[int, int]:
     total_files = 0
     total_size = 0
-    for entry in root.rglob("*"):
-        if entry.is_file():
-            total_files += 1
+    try:
+        entries = root.rglob("*")
+        for entry in entries:
             try:
-                total_size += entry.stat().st_size
+                is_file = entry.is_file()
             except OSError:
                 continue
+            if is_file:
+                total_files += 1
+                try:
+                    total_size += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total_files, total_size
     return total_files, total_size
 
 
@@ -740,15 +789,22 @@ def scan_storage_summary(profile: str | None = None) -> tuple[str, str]:
         total_size += size
         review_dir = batch / "review_markdown"
         md_names: list[str] = []
-        if review_dir.exists():
-            md_names = sorted(p.name for p in review_dir.glob("*.md"))
+        try:
+            if review_dir.exists():
+                md_names = sorted(p.name for p in review_dir.glob("*.md"))
+        except OSError:
+            md_names = []
         if md_names:
             preview = "、".join(md_names[:3])
             if len(md_names) > 3:
                 preview += f" 等 {len(md_names)} 份"
         else:
             preview = "—"
-        ctime = datetime.fromtimestamp(batch.stat().st_ctime).strftime("%Y-%m-%d %H:%M")
+        try:
+            ctime_raw = batch.stat().st_ctime
+        except OSError:
+            ctime_raw = 0
+        ctime = datetime.fromtimestamp(ctime_raw).strftime("%Y-%m-%d %H:%M")
         detail_lines.append(
             f"| `{batch.name}` | {ctime} | {files} | {_format_size(size)} | {preview} |"
         )
@@ -912,9 +968,22 @@ def _empty_dashboard_updates(status_text: str, profile: str = DEFAULT_PROFILE, r
             dataset_choices.sort(key=lambda item: item[0])
         except Exception:
             pass
+    missing_state, unreadable = _scan_unreadable_batch_dirs(profile)
+    status_parts = [status_text]
+    if missing_state or unreadable:
+        detail_parts: list[str] = []
+        if missing_state:
+            detail_parts.append(f"{missing_state} 个缺少 {BATCH_STATE_FILE_NAME}")
+        if unreadable:
+            detail_parts.append(f"{unreadable} 个不可读取")
+        status_parts.append(
+            "提示：当前 Profile 下发现批次目录异常（"
+            + "、".join(detail_parts)
+            + "），这些目录不会进入批次下拉框。"
+        )
     return (
         gr.update(choices=build_batch_choices(profile), value=None),
-        status_text,
+        "\n".join(part for part in status_parts if part),
         "未找到可用批次。",
         gr.update(choices=[], value=None),
         "当前没有待审核样本。",

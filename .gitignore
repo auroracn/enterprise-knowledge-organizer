@@ -4,11 +4,15 @@ __pycache__/
 .omc/
 .claude/
 .trae/
+Claude输出/
+trae输出/
+cursor开发/
 _measure_*
 _dify_trial*
 _dify_probe*
 _dify_metadata_filter_probe*
 _deepseek_test.py
 _rename_integration_docs.py
+副本.txt
 配置文件.chanfengdikongzl.json
 配置文件.xinweiduzl.json

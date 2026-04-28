@@ -1,0 +1,309 @@
+# 长风知识库统一 Metadata Schema - Canonical Source
+#
+# 维护方:长风知识整理系统
+# 入库端(本系统)按此 schema 写 metadata;检索端(yibiao / aurora)按字段做 filter。
+# 两端以本文件为唯一合约。
+
+version: 3
+last_updated: "2026-04-25"
+
+# ---------- v3 变更 ----------
+# 1. `product_auto_v1` 新增可选字段 `角色`(enum:竞品 / 供应商 / 自家 / 其他)
+#    用于区分`自动--产品库`内文档的角色,支持 competitor role 的应用层过滤
+#    **权威定义仍在外部**,此处只占位;外部下发字段前该列不会有值
+# ---------- v2 变更 ----------
+# 1. 新增 `_external_common_v1`:对应外部来源知识系统维护的 4 个"自动--"库
+#    字段名英文蛇形,与 external_kb_field_mapping.md 对齐,**权威源**在那
+# 2. `news_v1` 重写:继承 `_external_common_v1`,覆盖 3 个新闻库
+# 3. 新增 `product_auto_v1`:`自动--产品库`专用,继承 `_external_common_v1` + 7 个产品字段
+# 4. `product_v1` 保留不变,专用长风产品库(长风人工入库,中文字段)
+# 权威字段定义文档:
+#   - 4 个"自动--"库:D:\changfeng\外部来源知识\docs\external_kb_field_mapping.md
+#   - 人工/手动库:本文件 common_fields + schemas
+# -------------------------------------
+
+# ========== 通用字段 (common_fields) ==========
+# 所有文档入库时尽量填写
+
+common_fields:
+  - name: 文档类型
+    type: enum
+    required: true
+    values:
+      - 产品规格
+      - 产品目录
+      - 案例
+      - 行业方案
+      - 政策
+      - 官方指南
+      - 新闻
+      - 公众号文章
+      - 话术
+      - 联系方式
+      - 标书模板
+      - 参数偏离表
+      - 检测报告
+      - 商业计划
+      - 供应商介绍
+      - 其他
+
+  - name: 行业
+    type: enum
+    required: false
+    values:
+      - 林业
+      - 消防
+      - 应急
+      - 通用航空
+      - 低空经济
+      - 基础设施
+      - 水利
+      - 电力
+      - 巡检
+      - 其他
+
+  - name: 发布日期
+    type: date
+    format: YYYY-MM-DD
+    required: false
+    notes: 新闻类必填,用于 retention 过滤
+
+  - name: 原始路径
+    type: string
+    required: false
+    notes: 本地源文件路径,用于回溯
+
+  - name: 文档状态
+    type: enum
+    required: false
+    values: [正式, 草稿]
+    default: 正式
+
+  - name: 版本时间戳
+    type: string
+    required: false
+    notes: 入库时间戳,同文档多版本区分
+
+# ========== 扩展字段 (按 metadata_schema 分类) ==========
+# 各库在 kb_catalog.yaml 的 metadata_schema 指向的 schema 会继承 common_fields + 本节扩展
+
+schemas:
+  product_v1:
+    extends: common_fields
+    fields:
+      - name: 厂商
+        type: string
+        required: true
+      - name: 产品名
+        type: string
+        required: true
+      - name: 型号
+        type: string
+        required: false
+      - name: 价格
+        type: string
+        required: false
+
+  case_v1:
+    extends: common_fields
+    fields:
+      - name: 客户
+        type: string
+        required: false
+      - name: 项目地点
+        type: string
+        required: false
+      - name: 项目规模
+        type: string
+        required: false
+
+  pricing_v1:
+    extends: common_fields
+    fields:
+      - name: 项目名
+        type: string
+        required: true
+      - name: 招标单位
+        type: string
+        required: false
+      - name: 编制日期
+        type: date
+        required: false
+
+  policy_v1:
+    extends: common_fields
+    fields:
+      - name: 发布单位
+        type: string
+        required: true
+      - name: 文号
+        type: string
+        required: false
+      - name: 生效日期
+        type: date
+        required: false
+
+  news_v1:
+    # 外部来源知识系统维护的 3 个新闻库(自动--公众号 / 自动--新闻日报 / 自动--新闻条目)
+    # 字段与 _external_common_v1 完全一致,此处指针化
+    extends: _external_common_v1
+    fields: []
+    notes: |
+      权威定义在 D:\changfeng\外部来源知识\docs\external_kb_field_mapping.md
+      时间过滤字段名用 publish_date (time 类型)或 publish_ts (number Unix 秒),不要用"发布日期"中文名
+
+  detection_report_v1:
+    extends: common_fields
+    fields:
+      - name: 厂商
+        type: string
+        required: true
+      - name: 产品名
+        type: string
+        required: true
+      - name: 报告编号
+        type: string
+        required: true
+      - name: 检测机构
+        type: string
+        required: false
+      - name: 检测结论
+        type: string
+        required: false
+
+  script_v1:
+    extends: common_fields
+    fields:
+      - name: 应用场景
+        type: string
+        required: false
+      - name: 对象角色
+        type: string
+        required: false
+        notes: 客户高层 / 技术负责人 / 采购负责人 / ...
+
+  supplier_v1:
+    extends: common_fields
+    fields:
+      - name: 供应商名称
+        type: string
+        required: true
+      - name: 主营产品
+        type: string
+        required: false
+
+  contact_v1:
+    extends: common_fields
+    fields:
+      - name: 地区
+        type: string
+        required: true
+      - name: 部门
+        type: string
+        required: false
+
+  internal_v1:
+    extends: common_fields
+    fields: []
+
+  general_v1:
+    extends: common_fields
+    fields: []
+
+  # ========== 外部来源知识系统维护的 4 个"自动--"库专用 schema ==========
+  # 权威源:D:\changfeng\外部来源知识\docs\external_kb_field_mapping.md
+
+  _external_common_v1:
+    # 14 个通用字段,在 4 个"自动--"库全部注册。字段名英文蛇形。
+    # 对应外部 `config/metadata_schema.yaml`,版本对齐 cleaning.version=3
+    fields:
+      - name: source_type
+        type: string
+        required: true
+        notes: wechat / trendradar_daily / trendradar_item / product
+      - name: source_name
+        type: string
+        required: true
+        notes: 公众号名 / 媒体名
+      - name: publish_date
+        type: time
+        required: true
+        notes: 原文发布日期 ISO8601,资讯类时间过滤主字段(不要用中文"发布日期")
+      - name: publish_ts
+        type: number
+        required: true
+        notes: Unix 秒兜底
+      - name: ingest_ts
+        type: number
+        required: true
+        notes: 内部治理用,下游忽略
+      - name: content_hash
+        type: string
+        required: true
+        notes: sha256 去重,下游勿用作过滤
+      - name: original_url
+        type: string
+        required: true
+        notes: 溯源 + 新旧比对
+      - name: keyword_group
+        type: string
+        required: false
+        notes: 仅 news_item 有值:低空技术 / eVTOL / 政策 / 融资
+      - name: report_date
+        type: string
+        required: false
+        notes: 仅 news_item 有值,格式 YYYY-MM-DD
+      - name: content_tags
+        type: string
+        required: false
+        notes: "| 分隔的业务分类,**不是数组**,取值:政策/机型产品/价格/融资/落地应用/技术研发"
+      - name: product_family
+        type: string
+        required: false
+      - name: product_version
+        type: number
+        required: false
+      - name: superseded_by
+        type: string
+        required: false
+        notes: 非空=被替代的旧代,下游检索默认应过滤非空
+      - name: preserves_media
+        type: string
+        required: false
+        notes: '"true" 表示是低空产品文档保留了图表'
+
+  product_auto_v1:
+    # 自动--产品库专用,继承外部通用 14 字段 + 7 个产品专属字段
+    extends: _external_common_v1
+    fields:
+      - name: brand
+        type: string
+        required: false
+      - name: model
+        type: string
+        required: false
+      - name: category
+        type: string
+        required: false
+        notes: 无人机 / 机场 / eVTOL / 飞控 / 电池 / 传感器 / 其他
+      - name: first_seen_url
+        type: string
+        required: false
+      - name: first_seen_date
+        type: time
+        required: false
+      - name: mention_count
+        type: number
+        required: false
+      - name: completeness_score
+        type: number
+        required: false
+        notes: 参数完整度 0-100
+      - name: 角色
+        type: string
+        required: false
+        notes: |
+          v3 新增。取值枚举:竞品 / 供应商 / 自家 / 其他
+          外部来源知识系统按 sync_config.yaml 的 `competitor_brands` 白名单打标
+          方案生成系统 CompetitorAgent 查 competitor role 后,应用层过滤 角色 == 竞品
+    notes: (brand, model) 是业务主键,已由 sync_products.py 去重 + model_aliases 归一

@@ -1,0 +1,368 @@
+# 长风知识库中央目录 (KB Catalog) - Canonical Source
+#
+# 维护方:长风知识整理系统 (D:\changfeng\长风知识整理系统)
+# 下游消费方:
+#   - 智能标书系统 yibiao (D:\changfeng\智能标书\yibiao)
+#   - 方案生成系统团队 (D:\aurora\方案生成系统)
+#   - Dify 内聊天机器人 (长风知识库机器人)
+#   - 100MB 标书 workflow(规划中)
+#
+# 更新规则:
+#   1. 本文件是唯一真源。Dify 内新增/删除/重命名库必须同步更新本文件。
+#   2. 下游系统启动时读此文件,不得硬编码 dataset id。
+#   3. `roles` 字段对下游稳定(不随意改名),`id/name` 可变但需下游感知。
+
+version: 5
+last_updated: "2026-04-28"
+
+# ---------- v5 变更 ----------
+# 1. 增加 retrieval_defaults,明确下游默认检索基线:
+#    hybrid_search + reranking_enable:true + score_threshold_enabled:false。
+# 2. 为 政策文件 / 官方指导 / 政府动态 增加 retrieval 配置,与 Dify 后台混合检索 + qwen3-rerank + top_k 4 对齐。
+# 3. 维护流程新增本地一致性校验:python -m minimum_workflow.kb_catalog_validator kb_catalog.yaml。
+# ---------- v4 变更 ----------
+# 1. 按 2026-04-28 live `changfeng-Dify-api` 知识库列表同步 id/name。
+# 2. `产品库` / `案例库` 线上展示名已去掉"长风"前缀,UUID 不变。
+# 3. `合作供应商资料` 线上 UUID 已变更为 e10ba417-785e-44e6-9914-4c71215f218f。
+# 4. 补录结构调整后新增/恢复的库:
+#    `行业知识` / `教育培训` / `长风实例库` / `低空行业动态` / `行业标准`。
+# 5. 下游必须读取本文件 role_index,不得继续缓存 v3 的 dataset id。
+# ---------- v3 变更 ----------
+# 1. 新增 `competitor` role,指向 `自动--产品库` UUID(与 supplier_product 共用)
+# 2. 增加说明:competitor role 需要**应用层**按 metadata `角色 == 竞品` 过滤
+#    (Dify filter 不生效,且外部来源知识系统需要先下发 `角色` 字段并填值)
+# ---------- v2 变更 ----------
+# 1. retention_days 按外部来源知识系统 `config/sync_config.yaml` 实际值校准:
+#    - 自动--公众号:     7   → 180
+#    - 自动--新闻条目:   30  → 90
+#    - 自动--新闻日报:   90  → 90 (不变)
+#    - 自动--产品库:     null → 3650(不做 disable)
+# 2. 4 个"自动--"库的 metadata_schema 改用英文版(news_v1 重写,新增 product_auto_v1)
+# 3. 增加 external_field_mapping_doc 指针,权威字段定义由外部来源知识系统维护
+# --------------------------------------------------------------------
+
+external_field_mapping_doc: "D:\\changfeng\\外部来源知识\\docs\\external_kb_field_mapping.md"
+
+# ========== 默认检索基线 ==========
+# 下游若无更细粒度策略,按此参数调用 Dify retrieve。
+# 单库有 retrieval 字段时,以单库配置覆盖对应字段。
+
+retrieval_defaults:
+  search_method: hybrid_search
+  reranking_enable: true
+  score_threshold_enabled: false
+  top_k: 5
+
+# ========== Tier 说明 ==========
+# A = 核心业务层:慢变,高价值,默认主检索
+# B = 结构化参考层:中频更新,按主题命中时检索
+# C = 资讯流层:高频增长,独立通道,必须带时间过滤
+
+# ========== ingest_source 说明 ==========
+# manual = 人工确认入库(对应 dataset 名称不以"自动--"开头)
+# auto   = API 自动抓取入库(对应"自动--"开头的库)
+
+# ========== retention_days ==========
+# null = 永久保留
+# N    = 保留最近 N 天(归档脚本按发布日期迁出)
+
+datasets:
+  # ---------------- A 核心业务层 ----------------
+  - id: 9b910bf7-796e-4754-9f76-e1a08f95ae72
+    name: 产品库
+    tier: A
+    roles: [product, 产品推荐, 技术参数]
+    metadata_schema: product_v1
+    ingest_source: manual
+    retention_days: null
+    description: 长风自家产品 + 大疆渠道产品
+
+  - id: 6d70c0ba-0af1-405a-ab2f-cab255a17bc0
+    name: 案例库
+    tier: A
+    roles: [case, solution, 行业方案]
+    metadata_schema: case_v1
+    ingest_source: manual
+    retention_days: null
+    description: 行业解决方案 / 项目案例
+
+  - id: cd2caf58-10b8-46ac-9417-aec9e927d7af
+    name: 长风实例库
+    tier: A
+    roles: [case, solution, implementation_case, 长风实例]
+    metadata_schema: case_v1
+    ingest_source: manual
+    retention_days: null
+    description: 长风落地实施的案例库
+
+  - id: cf322698-20f6-420f-8914-23f1b34425ca
+    name: 长风话术库
+    tier: A
+    roles: [script, 沟通话术, 谈判策略]
+    metadata_schema: script_v1
+    ingest_source: manual
+    retention_days: null
+    description: 销售话术 / 客户沟通策略
+
+  - id: e10ba417-785e-44e6-9914-4c71215f218f
+    name: 合作供应商资料
+    tier: A
+    roles: [supplier, 合作伙伴]
+    metadata_schema: supplier_v1
+    ingest_source: manual
+    retention_days: null
+    description: 第三方供应商公司介绍 + 产品手册
+
+  - id: c3170295-cd3b-49ad-8ce0-752f262c38e2
+    name: 价格库
+    tier: A
+    roles: [pricing, bid_response, 参数偏离表]
+    metadata_schema: pricing_v1
+    ingest_source: manual
+    retention_days: null
+    description: 参数偏离表 / 历史投标响应资料
+
+  - id: 67006a29-15a8-4b1c-a823-dd33c2e7e7b4
+    name: 政府部门联系方式
+    tier: A
+    roles: [govt_contact]
+    metadata_schema: contact_v1
+    ingest_source: manual
+    retention_days: null
+    description: 贵州省各县市林业局联系方式
+
+  - id: 27c11df5-eb36-45d1-9ed8-f607c63a9b0d
+    name: 长风内部资料
+    tier: A
+    roles: [internal, 商业计划]
+    metadata_schema: internal_v1
+    ingest_source: manual
+    retention_days: null
+    description: 林业低空商业计划书等内部文档
+
+  # ---------------- B 结构化参考层 ----------------
+  - id: cac8d8dd-2d02-4713-b38d-06234dd0c8a3
+    name: 政策文件
+    tier: B
+    roles: [policy, 低空政策]
+    metadata_schema: policy_v1
+    retrieval: {search_method: hybrid_search, reranking_enable: true, score_threshold_enabled: false, top_k: 4}
+    ingest_source: manual
+    retention_days: null
+    description: 低空经济 / 林业政策文件
+
+  - id: 4ef84d92-30f8-410a-b5f0-c014137564bb
+    name: 官方指导
+    tier: B
+    roles: [official_guide, policy]
+    metadata_schema: policy_v1
+    retrieval: {search_method: hybrid_search, reranking_enable: true, score_threshold_enabled: false, top_k: 4}
+    ingest_source: manual
+    retention_days: null
+    description: 行业技术指南 PDF
+
+  - id: b60b46d2-5391-4815-a0ec-3ee996377daf
+    name: 政府动态
+    tier: B
+    roles: [govt_dynamic, 林业政务]
+    metadata_schema: news_v1
+    retrieval: {search_method: hybrid_search, reranking_enable: true, score_threshold_enabled: false, top_k: 4}
+    ingest_source: manual
+    retention_days: null
+    description: 林业政务公告(人工确认)
+
+  - id: 7529209f-5ea9-4e5a-9398-e32985e7a86c
+    name: 贵州林业相关知识
+    tier: B
+    roles: [forestry_knowledge]
+    metadata_schema: general_v1
+    ingest_source: manual
+    retention_days: null
+    description: 林业项目分析资料
+
+  - id: 800b73a6-7f2c-411b-8a33-98361ea6a637
+    name: 行业知识
+    tier: B
+    roles: [industry_knowledge, 行业知识]
+    metadata_schema: general_v1
+    ingest_source: manual
+    retention_days: null
+    description: 低空经济与行业通用知识资料
+
+  - id: be81844b-ab8f-4076-bf71-0770af24eaa2
+    name: 教育培训
+    tier: B
+    roles: [training, education, 教育培训]
+    metadata_schema: general_v1
+    ingest_source: manual
+    retention_days: null
+    description: 教育培训资料
+
+  - id: 2aa70436-f28f-43af-ade8-48120bf2f4cd
+    name: 行业标准
+    tier: B
+    roles: [industry_standard, standard, 行业标准]
+    metadata_schema: policy_v1
+    ingest_source: manual
+    retention_days: null
+    description: 低空经济中的行业标准
+
+  - id: 85c81b2c-7959-4299-a14d-8ebd5b5a1a6e
+    name: 低空行业动态
+    tier: B
+    roles: [industry_dynamic, low_altitude_dynamic, 低空行业动态]
+    metadata_schema: general_v1
+    ingest_source: manual
+    retention_days: null
+    description: 低空行业动态资料
+
+  - id: 5d8a2e9d-f032-4cff-9d1e-595c91a1d05c
+    name: 自动--产品库
+    tier: B
+    roles: [supplier_product, 第三方产品, competitor]
+    metadata_schema: product_auto_v1
+    ingest_source: auto
+    retention_days: 3650
+    description: |
+      API 自动抓取的第三方厂家产品(外部来源知识系统维护,不做 disable)。
+      同一库既作为 supplier_product 检索入口,也作为 competitor 检索入口;
+      应用层按 metadata `角色` 字段(竞品 / 供应商 / 自家 / 其他)二次过滤。
+
+  - id: 1a09cc22-fa0d-4a7f-908a-4d813344306d
+    name: 测试
+    tier: B
+    roles: [detection_report, test]
+    metadata_schema: detection_report_v1
+    ingest_source: manual
+    retention_days: null
+    description: 检测报告 / 参数确认函试水(后续拟拆为独立"检测报告库")
+
+  - id: 43170c27-48da-4350-843c-b1b958d64a25
+    name: 招投标流程文档
+    tier: B
+    roles: [tender_process]
+    metadata_schema: general_v1
+    ingest_source: manual
+    retention_days: null
+    description: 招投标流程内部文档(当前为空)
+
+  - id: e61f3aeb-8092-466f-b66f-ce003e41df00
+    name: 应用场景
+    tier: B
+    roles: [application_scenario]
+    metadata_schema: general_v1
+    ingest_source: manual
+    retention_days: null
+    description: 行业应用场景库(当前为空)
+
+  # ---------------- C 资讯流层 ----------------
+  - id: 0beae9bf-2d1f-4403-8e6a-bbeb2cf99ac5
+    name: 自动--公众号
+    tier: C
+    roles: [news_wechat, news_hot]
+    metadata_schema: news_v1
+    ingest_source: auto
+    retention_days: 180
+    description: 微信公众号原文存档(外部来源知识系统维护,disable 归档)
+
+  - id: 6061fab2-a5a2-4153-9560-7d29df23b196
+    name: 自动--新闻日报
+    tier: C
+    roles: [news_daily, news_hot]
+    metadata_schema: news_v1
+    ingest_source: auto
+    retention_days: 90
+    description: 每 30 分钟一份的热点雷达(外部来源知识系统维护)
+
+  - id: 2ad1beb4-fa82-4364-bdb7-5c9026d50baa
+    name: 自动--新闻条目
+    tier: C
+    roles: [news_entry, news_hot]
+    metadata_schema: news_v1
+    ingest_source: auto
+    retention_days: 90
+    description: 单条新闻条目(外部来源知识系统维护)
+
+# ========== 角色反向索引 (role -> dataset ids) ==========
+# 下游系统按 role 查 dataset ids 的预计算表。roles 未来变动时同步更新。
+
+role_index:
+  # 产品与供应商
+  product:            [9b910bf7-796e-4754-9f76-e1a08f95ae72]
+  supplier:           [e10ba417-785e-44e6-9914-4c71215f218f]
+  supplier_product:   [5d8a2e9d-f032-4cff-9d1e-595c91a1d05c, e10ba417-785e-44e6-9914-4c71215f218f]
+  # competitor 与 supplier_product 共用 `自动--产品库` UUID
+  # 下游必须在应用层按 metadata `角色 == 竞品` 过滤(Dify filter 尚不生效)
+  competitor:         [5d8a2e9d-f032-4cff-9d1e-595c91a1d05c]
+
+  # 案例与方案
+  case:               [6d70c0ba-0af1-405a-ab2f-cab255a17bc0, cd2caf58-10b8-46ac-9417-aec9e927d7af]
+  solution:           [6d70c0ba-0af1-405a-ab2f-cab255a17bc0, cd2caf58-10b8-46ac-9417-aec9e927d7af]
+  implementation_case: [cd2caf58-10b8-46ac-9417-aec9e927d7af]
+
+  # 话术
+  script:             [cf322698-20f6-420f-8914-23f1b34425ca]
+
+  # 价格与投标
+  pricing:            [c3170295-cd3b-49ad-8ce0-752f262c38e2]
+  bid_response:       [c3170295-cd3b-49ad-8ce0-752f262c38e2]
+
+  # 政策与政务
+  policy:             [cac8d8dd-2d02-4713-b38d-06234dd0c8a3, 4ef84d92-30f8-410a-b5f0-c014137564bb]
+  official_guide:     [4ef84d92-30f8-410a-b5f0-c014137564bb]
+  govt_dynamic:       [b60b46d2-5391-4815-a0ec-3ee996377daf]
+  govt_contact:       [67006a29-15a8-4b1c-a823-dd33c2e7e7b4]
+
+  # 行业知识
+  forestry_knowledge: [7529209f-5ea9-4e5a-9398-e32985e7a86c]
+  industry_knowledge: [800b73a6-7f2c-411b-8a33-98361ea6a637]
+  training:           [be81844b-ab8f-4076-bf71-0770af24eaa2]
+  education:          [be81844b-ab8f-4076-bf71-0770af24eaa2]
+  industry_standard:  [2aa70436-f28f-43af-ade8-48120bf2f4cd]
+  standard:           [2aa70436-f28f-43af-ade8-48120bf2f4cd]
+  industry_dynamic:   [85c81b2c-7959-4299-a14d-8ebd5b5a1a6e]
+  low_altitude_dynamic: [85c81b2c-7959-4299-a14d-8ebd5b5a1a6e]
+  internal:           [27c11df5-eb36-45d1-9ed8-f607c63a9b0d]
+
+  # 资讯(C 层) - 统一入口用 news_hot
+  news_hot:           [0beae9bf-2d1f-4403-8e6a-bbeb2cf99ac5, 6061fab2-a5a2-4153-9560-7d29df23b196, 2ad1beb4-fa82-4364-bdb7-5c9026d50baa]
+  news_wechat:        [0beae9bf-2d1f-4403-8e6a-bbeb2cf99ac5]
+  news_daily:         [6061fab2-a5a2-4153-9560-7d29df23b196]
+  news_entry:         [2ad1beb4-fa82-4364-bdb7-5c9026d50baa]
+
+  # 其他
+  detection_report:   [1a09cc22-fa0d-4a7f-908a-4d813344306d]
+  test:               [1a09cc22-fa0d-4a7f-908a-4d813344306d]
+  tender_process:     [43170c27-48da-4350-843c-b1b958d64a25]
+  application_scenario: [e61f3aeb-8092-466f-b66f-ce003e41df00]
+
+# ========== Tier 索引 ==========
+# 供下游按层级批量检索
+
+tier_index:
+  A:
+    - 9b910bf7-796e-4754-9f76-e1a08f95ae72   # 产品库
+    - 6d70c0ba-0af1-405a-ab2f-cab255a17bc0   # 案例库
+    - cd2caf58-10b8-46ac-9417-aec9e927d7af   # 长风实例库
+    - cf322698-20f6-420f-8914-23f1b34425ca   # 长风话术库
+    - e10ba417-785e-44e6-9914-4c71215f218f   # 合作供应商资料
+    - c3170295-cd3b-49ad-8ce0-752f262c38e2   # 价格库
+    - 67006a29-15a8-4b1c-a823-dd33c2e7e7b4   # 政府部门联系方式
+    - 27c11df5-eb36-45d1-9ed8-f607c63a9b0d   # 长风内部资料
+  B:
+    - cac8d8dd-2d02-4713-b38d-06234dd0c8a3   # 政策文件
+    - 4ef84d92-30f8-410a-b5f0-c014137564bb   # 官方指导
+    - b60b46d2-5391-4815-a0ec-3ee996377daf   # 政府动态
+    - 7529209f-5ea9-4e5a-9398-e32985e7a86c   # 贵州林业相关知识
+    - 800b73a6-7f2c-411b-8a33-98361ea6a637   # 行业知识
+    - be81844b-ab8f-4076-bf71-0770af24eaa2   # 教育培训
+    - 2aa70436-f28f-43af-ade8-48120bf2f4cd   # 行业标准
+    - 85c81b2c-7959-4299-a14d-8ebd5b5a1a6e   # 低空行业动态
+    - 5d8a2e9d-f032-4cff-9d1e-595c91a1d05c   # 自动--产品库
+    - 1a09cc22-fa0d-4a7f-908a-4d813344306d   # 测试
+    - 43170c27-48da-4350-843c-b1b958d64a25   # 招投标流程文档(空)
+    - e61f3aeb-8092-466f-b66f-ce003e41df00   # 应用场景(空)
+  C:
+    - 0beae9bf-2d1f-4403-8e6a-bbeb2cf99ac5   # 自动--公众号
+    - 6061fab2-a5a2-4153-9560-7d29df23b196   # 自动--新闻日报
+    - 2ad1beb4-fa82-4364-bdb7-5c9026d50baa   # 自动--新闻条目

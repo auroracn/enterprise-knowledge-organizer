@@ -18,3 +18,18 @@ _rename_integration_docs.py
 配置文件.xinweiduzl.json
 配置文件.示例.json
 config/first_batch_samples.json
+
+# 内部文档与一次性素材脚本（不入公开仓库）
+minimum_workflow/build_shudao_low_altitude_pack.py
+交接_下一轮.md
+进度.md
+链路说明.md
+五大根目录全量复核报告.md
+分类误判样本汇总.md
+trae记录问题.md
+开发规范.md
+技术落地细则.md
+自动化开发流程.md
+自动化执行手册.md
+自动化校验标准.md
+自动化校验逻辑.md

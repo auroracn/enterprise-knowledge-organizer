@@ -413,6 +413,54 @@ class MinimumWorkflowTest(unittest.TestCase):
         self.assertIn("本次未生成终稿 Markdown。", trace_content)
         self.assertNotIn("终稿 Markdown 已落在 Claude输出 子目录中。", trace_content)
 
+    def test_wrapper_run_directory_keeps_trace_when_scan_report_is_missing(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        source_dir = Path(temp_dir.name) / "empty-source"
+        output_root = Path(temp_dir.name) / "Claude输出"
+        source_dir.mkdir()
+
+        with patch("run_claude_output_workflow.run_source_dir", return_value=1):
+            result = run_directory(
+                source_dir,
+                output_root=output_root,
+                pdf_extractor="mineru",
+                mineru_token=None,
+                enable_ocr=False,
+                enable_qwen=False,
+                qwen_runtime={},
+            )
+
+        self.assertEqual(result, 1)
+        report_path = build_internal_output_root(source_dir) / "scan_report.json"
+        self.assertTrue(report_path.exists())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["selected_count"], 0)
+        self.assertEqual(report["failed_count"], 1)
+        self.assertTrue((source_dir / "链路说明.md").exists())
+
+    def test_wrapper_run_directory_fails_when_successful_scan_misses_report(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        source_dir = Path(temp_dir.name) / "missing-report"
+        output_root = Path(temp_dir.name) / "Claude输出"
+        source_dir.mkdir()
+
+        with patch("run_claude_output_workflow.run_source_dir", return_value=0):
+            result = run_directory(
+                source_dir,
+                output_root=output_root,
+                pdf_extractor="mineru",
+                mineru_token=None,
+                enable_ocr=False,
+                enable_qwen=False,
+                qwen_runtime={},
+            )
+
+        self.assertEqual(result, 1)
+        self.assertTrue((source_dir / "链路说明.md").exists())
+
+    def test_extract_source_content_falls_back_to_markitdown_and_appends_local_docx_tables(self) -> None:
         source_path = Path("D:/tmp/智慧园区巡检技术方案.docx")
         batch_result = {
             "batch_id": "batch-docx-failed",
@@ -449,9 +497,7 @@ class MinimumWorkflowTest(unittest.TestCase):
             return_value=markitdown_result,
             create=True,
         ), patch.object(
-            sample_docx_extract_to_md,
-            "extract_docx_blocks",
-            return_value=local_blocks,
+            sample_docx_extract_to_md, "extract_docx_blocks", return_value=local_blocks
         ):
             result = sample_docx_extract_to_md.extract_source_content(source_path)
 
@@ -490,6 +536,17 @@ class MinimumWorkflowTest(unittest.TestCase):
         self.assertIn("| 场景类型 | 序号 | 场景机会名称 | 单位名称 | 合作需求 | 联系方式 |", result["extracted_text"])
         self.assertIn("已补充本地 docx 表格结构提取", result["extraction_note"])
         self.assertTrue(any(block.lstrip().startswith("|") for block in result["blocks"]))
+
+    def test_resolve_tesseract_cmd_caches_lookup(self) -> None:
+        extractors_module._resolve_tesseract_cmd.cache_clear()
+        with patch("minimum_workflow.extractors.shutil.which", return_value="/usr/bin/tesseract") as mocked_which, patch(
+            "minimum_workflow.extractors.Path.exists", return_value=True
+        ):
+            self.assertEqual(extractors_module._resolve_tesseract_cmd(), "/usr/bin/tesseract")
+            self.assertEqual(extractors_module._resolve_tesseract_cmd(), "/usr/bin/tesseract")
+
+        self.assertEqual(mocked_which.call_count, 1)
+        extractors_module._resolve_tesseract_cmd.cache_clear()
 
     def test_extract_document_image_goes_to_ocr_placeholder(self) -> None:
         temp_dir = tempfile.TemporaryDirectory()
@@ -769,12 +826,16 @@ class MinimumWorkflowTest(unittest.TestCase):
         ), patch(
             "minimum_workflow.extractors.extract_pdf_with_mineru_ocr",
             side_effect=RuntimeError("mock ocr error"),
+        ), patch(
+            "minimum_workflow.extractors.extract_pdf_with_tesseract_ocr",
+            side_effect=RuntimeError("mock local ocr error"),
         ):
             result = extract_pdf_text(sample_path, enable_ocr=True, ocr_token="token-demo")
 
         self.assertEqual(result.extractor_name, "ocr:placeholder:pdf")
         self.assertEqual(result.extraction_status, "待OCR")
-        self.assertIn("已尝试真实 OCR，但调用失败：mock ocr error", result.note)
+        self.assertIn("已尝试 MinerU OCR，但调用失败：mock ocr error", result.note)
+        self.assertIn("已尝试本地 Tesseract OCR，但失败：mock local ocr error", result.note)
 
     def test_build_structured_payload_uses_mineru_pdf_strategy(self) -> None:
         contract = load_contract()
@@ -850,12 +911,19 @@ class MinimumWorkflowTest(unittest.TestCase):
         sample_path = Path(temp_dir.name) / "设备检测报告.png"
         sample_path.write_bytes(b"fake-image")
 
-        with patch("minimum_workflow.extractors.extract_image_with_mineru_ocr", side_effect=RuntimeError("mock image ocr error")):
+        with patch(
+            "minimum_workflow.extractors.extract_image_with_mineru_ocr",
+            side_effect=RuntimeError("mock image ocr error"),
+        ), patch(
+            "minimum_workflow.extractors.extract_image_with_tesseract_ocr",
+            side_effect=RuntimeError("mock local image ocr error"),
+        ):
             result = extract_text(sample_path, "image", enable_ocr=True, ocr_token="token-demo")
 
         self.assertEqual(result.extractor_name, "ocr:placeholder:image")
         self.assertEqual(result.extraction_status, "待OCR")
-        self.assertIn("已尝试真实 OCR，但调用失败：mock image ocr error", result.note)
+        self.assertIn("已尝试 MinerU OCR 但调用失败：mock image ocr error", result.note)
+        self.assertIn("已尝试本地 Tesseract OCR 但失败：mock local image ocr error", result.note)
 
     def test_build_structured_payload_marks_wait_review_when_pdf_waits_for_ocr(self) -> None:
         contract = load_contract()

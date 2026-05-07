@@ -4,7 +4,9 @@ import io
 import json
 import logging
 import re
+import shutil
 import ssl
+from functools import cache
 import sys
 import tempfile
 import time
@@ -397,7 +399,19 @@ def extract_text(
             try:
                 ocr_result = extract_image_with_mineru_ocr(source_path, ocr_token)
             except Exception as exc:
-                return extract_image_with_ocr_placeholder(source_path, extra_note=f"已尝试真实 OCR，但调用失败：{exc}")
+                try:
+                    ocr_result = extract_image_with_tesseract_ocr(source_path)
+                except Exception as local_exc:
+                    return extract_image_with_ocr_placeholder(
+                        source_path,
+                        extra_note=f"已尝试 MinerU OCR 但调用失败：{exc}；已尝试本地 Tesseract OCR 但失败：{local_exc}",
+                    )
+            return finalize_image_result_after_ocr(source_path, ocr_result)
+        if enable_ocr:
+            try:
+                ocr_result = extract_image_with_tesseract_ocr(source_path)
+            except Exception as exc:
+                return extract_image_with_ocr_placeholder(source_path, extra_note=f"已尝试本地 Tesseract OCR，但失败：{exc}")
             return finalize_image_result_after_ocr(source_path, ocr_result)
         return extract_image_with_ocr_placeholder(source_path)
 
@@ -1283,6 +1297,93 @@ def extract_image_with_mineru_ocr(source_path: Path, token: str) -> ExtractionRe
     )
 
 
+@cache
+def _resolve_tesseract_cmd() -> str | None:
+    candidates = [
+        shutil.which("tesseract"),
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
+
+
+def _prepare_image_for_tesseract(image: Any) -> Any:
+    from PIL import ImageOps
+
+    prepared = image.convert("L")
+    prepared = ImageOps.autocontrast(prepared)
+    width, height = prepared.size
+    if max(width, height) < 2200:
+        scale = 2200 / max(width, height)
+        prepared = prepared.resize((int(width * scale), int(height * scale)))
+    return prepared
+
+
+def _run_tesseract_on_image(image: Any) -> str:
+    try:
+        import pytesseract
+    except ImportError as exc:
+        raise RuntimeError("pytesseract 不可用，无法执行本地 OCR。") from exc
+
+    tesseract_cmd = _resolve_tesseract_cmd()
+    if not tesseract_cmd:
+        raise RuntimeError("未找到 tesseract 可执行文件，无法执行本地 OCR。")
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+    prepared = _prepare_image_for_tesseract(image)
+    return pytesseract.image_to_string(prepared, lang="chi_sim+eng", config="--psm 6").strip()
+
+
+def extract_image_with_tesseract_ocr(source_path: Path) -> ExtractionResult:
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("Pillow 不可用，无法读取图片执行本地 OCR。") from exc
+
+    with Image.open(source_path) as image:
+        text = _run_tesseract_on_image(image)
+    return build_ocr_result(
+        source_path,
+        text,
+        page_count=1,
+        note="已通过本机 Tesseract 中文 OCR 完成图片文本提取。",
+        extractor_name="ocr:tesseract:image",
+    )
+
+
+def extract_pdf_with_tesseract_ocr(source_path: Path, *, page_count: int | None) -> ExtractionResult:
+    try:
+        import fitz
+    except ImportError as exc:
+        raise RuntimeError("PyMuPDF 不可用，无法渲染 PDF 执行本地 OCR。") from exc
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError("Pillow 不可用，无法执行 PDF 本地 OCR。") from exc
+
+    doc = fitz.open(source_path)
+    blocks: list[str] = []
+    try:
+        for page_index in range(doc.page_count):
+            page = doc.load_page(page_index)
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(2.4, 2.4), alpha=False)
+            image = Image.open(io.BytesIO(pixmap.tobytes("png")))
+            text = _run_tesseract_on_image(image)
+            if text.strip():
+                blocks.append(f"## 第 {page_index + 1} 页 OCR\n\n{text.strip()}")
+    finally:
+        doc.close()
+
+    return build_ocr_result(
+        source_path,
+        "\n\n".join(blocks),
+        page_count=page_count or len(blocks) or None,
+        note="已通过本机 Tesseract 中文 OCR 完成扫描型 PDF 文本提取。",
+        extractor_name="ocr:tesseract:pdf",
+    )
+
+
 def extract_pdf_with_mineru_ocr(source_path: Path, token: str, *, page_count: int | None) -> ExtractionResult:
     batch_result = run_mineru_batch([source_path], token, max_polls=_size_aware_max_polls(source_path))
     result = batch_result["results"][0]
@@ -1331,16 +1432,50 @@ def extract_pdf_text(source_path: Path, *, enable_ocr: bool = False, ocr_token: 
         try:
             ocr_result = extract_pdf_with_mineru_ocr(source_path, ocr_token, page_count=effective_pages)
         except Exception as exc:
-            if has_meaningful_text(best_text):
+            try:
+                ocr_result = extract_pdf_with_tesseract_ocr(source_path, page_count=effective_pages)
+            except Exception as local_exc:
+                if has_meaningful_text(best_text):
+                    return ExtractionResult(
+                        extractor_name=extractor_name,
+                        extraction_status="已提取文本",
+                        extracted_text=best_text,
+                        preview_text=preview,
+                        text_length=len(best_text),
+                        page_count=page_count,
+                        source_encoding="",
+                        note=(
+                            f"{best_note or ''} PDF 文字层较稀疏，已尝试 MinerU OCR 但失败：{exc}；"
+                            f"已尝试本地 Tesseract OCR 但失败：{local_exc}"
+                        ).strip(),
+                    )
                 return ExtractionResult(
-                    extractor_name=extractor_name,
-                    extraction_status="已提取文本",
-                    extracted_text=best_text,
-                    preview_text=preview,
-                    text_length=len(best_text),
-                    page_count=page_count,
+                    extractor_name="ocr:placeholder:pdf",
+                    extraction_status="待OCR",
+                    extracted_text="",
+                    preview_text="",
+                    text_length=0,
+                    page_count=effective_pages or page_count,
                     source_encoding="",
-                    note=f"{best_note or ''} PDF 文字层较稀疏，已尝试 OCR 但失败：{exc}".strip(),
+                    note=(
+                        f"PDF 文字层稀疏（平均 {avg_chars_per_page:.0f} 字/页）；"
+                        f"已尝试 MinerU OCR，但调用失败：{exc}；"
+                        f"已尝试本地 Tesseract OCR，但失败：{local_exc}"
+                    ),
+                )
+            else:
+                if not best_text.strip():
+                    return ocr_result
+                merged_text = best_text.strip() + "\n\n" + ocr_result.extracted_text
+                return ExtractionResult(
+                    extractor_name=f"{extractor_name}+{ocr_result.extractor_name}",
+                    extraction_status="已提取文本",
+                    extracted_text=merged_text,
+                    preview_text=normalize_preview(merged_text),
+                    text_length=len(merged_text),
+                    page_count=effective_pages,
+                    source_encoding="utf-8",
+                    note=f"PDF 文字层稀疏（平均 {avg_chars_per_page:.0f} 字/页），已通过本地 Tesseract OCR 补齐扫描页。{ocr_result.note}",
                 )
         else:
             # 文字层本来就是空的 → 直接返回 OCR 结果；否则把文字层与 OCR 拼接。
@@ -1376,7 +1511,16 @@ def extract_pdf_text(source_path: Path, *, enable_ocr: bool = False, ocr_token: 
         try:
             return extract_pdf_with_mineru_ocr(source_path, ocr_token, page_count=pypdf_pages or plumber_pages)
         except Exception as exc:
-            notes.append(f"已尝试真实 OCR，但调用失败：{exc}")
+            notes.append(f"已尝试 MinerU OCR，但调用失败：{exc}")
+            try:
+                return extract_pdf_with_tesseract_ocr(source_path, page_count=pypdf_pages or plumber_pages)
+            except Exception as local_exc:
+                notes.append(f"已尝试本地 Tesseract OCR，但失败：{local_exc}")
+    elif enable_ocr:
+        try:
+            return extract_pdf_with_tesseract_ocr(source_path, page_count=pypdf_pages or plumber_pages)
+        except Exception as exc:
+            notes.append(f"已尝试本地 Tesseract OCR，但失败：{exc}")
     else:
         notes.append("当前未启用真实 OCR（缺少 MinerU token 或未开启 OCR 开关），仅保留待 OCR 占位结果。")
     return ExtractionResult(

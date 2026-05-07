@@ -6,6 +6,7 @@ import json
 import random
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from minimum_workflow.cli import build_scan_sample_id, resolve_mineru_token, resolve_qwen_runtime, run_source_dir
@@ -371,8 +372,36 @@ def run_directory(
 
     internal_output_root = build_internal_output_root(source_dir)
     report_path = internal_output_root / "scan_report.json"
+    missing_report_created = False
     if not report_path.exists():
-        raise FileNotFoundError(f"未找到扫描报告: {report_path}")
+        missing_report_created = True
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(
+                {
+                    "source_dir": str(source_dir),
+                    "review_output_dir": str(review_output_dir),
+                    "generated_at": datetime.now().isoformat(timespec="seconds"),
+                    "total_count": 0,
+                    "selected_count": 0,
+                    "success_count": 0,
+                    "failed_count": 1,
+                    "skipped_duplicate_count": 0,
+                    "skipped_photo_count": 0,
+                    "skipped_non_source_count": 0,
+                    "items": [
+                        {
+                            "status": "failed",
+                            "source_path": str(source_dir),
+                            "error": "目录扫描未生成 scan_report.json，通常表示未发现可处理文件。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
     report = load_report(report_path)
     skipped_csv_path = write_skipped_files_csv(source_dir, report)
@@ -381,6 +410,8 @@ def run_directory(
 
     if result != 0:
         return result
+    if missing_report_created:
+        return 1
     if any(not item.passed for item in acceptance_results):
         return 1
     return 0

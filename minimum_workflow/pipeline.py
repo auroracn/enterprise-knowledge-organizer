@@ -190,7 +190,7 @@ def build_auto_profile_payload(
     blocks = split_text_to_blocks(extraction.extracted_text)
     if not blocks:
         return {}
-    profile = infer_document_profile(source_path.stem, blocks)
+    profile = infer_document_profile(source_path.name, blocks)
     if profile["模板归属"] == "待人工补规则":
         return {}
 

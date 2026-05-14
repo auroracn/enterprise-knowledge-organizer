@@ -200,6 +200,33 @@ def normalize_text_line(line: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"^#+\s*", "", line or "")).strip()
 
 
+def clean_garbled_text(text: str) -> str:
+    """清理PDF解析中的乱码字符"""
+    if not text:
+        return text
+    # 替换常见的乱码字符
+    garbled_chars = "霖需笥霉空卫摧璨实：；。>g<�·．俨•"
+    for char in garbled_chars:
+        text = text.replace(char, "")
+    # 清理连续的特殊符号（如 ... --- ___）
+    text = re.sub(r"[.]{3,}", "…", text)
+    text = re.sub(r"[-]{3,}", "—", text)
+    text = re.sub(r"[_]{3,}", "", text)
+    # 清理PDF解析中的常见错误字符
+    text = re.sub(r"(?<=[a-zA-Z])\.(?=[a-zA-Z])", "", text)  # 清理字母之间的点号
+    text = re.sub(r"\s+", " ", text)  # 合并多个空格
+    # 清理无意义的单字符行
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # 跳过只有1-2个无意义字符的行
+        if len(stripped) <= 2 and not any(c.isalnum() for c in stripped):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
 def looks_like_webpage_shell_text(text: str) -> bool:
     signal_hits = sum(1 for keyword in WEBPAGE_SHELL_SIGNAL_KEYWORDS if keyword in text)
     if "原文: http" in text and signal_hits >= 1:
@@ -391,7 +418,21 @@ def extract_text(
         local_result = extract_presentation_text(source_path)
         return try_markitdown_office_fallback(source_path, file_type, local_result)
     if file_type == "pdf":
-        return extract_pdf_text(source_path, enable_ocr=enable_ocr, ocr_token=ocr_token)
+        result = extract_pdf_text(source_path, enable_ocr=enable_ocr, ocr_token=ocr_token)
+        # 清洗乱码字符
+        if result.extracted_text:
+            cleaned_text = clean_garbled_text(result.extracted_text)
+            return ExtractionResult(
+                extractor_name=result.extractor_name,
+                extraction_status=result.extraction_status,
+                extracted_text=cleaned_text,
+                preview_text=normalize_preview(cleaned_text),
+                text_length=len(cleaned_text),
+                page_count=result.page_count,
+                source_encoding=result.source_encoding,
+                note=result.note,
+            )
+        return result
     if file_type == "image":
         if should_skip_image_file(source_path):
             return skip_image_as_photo(source_path)

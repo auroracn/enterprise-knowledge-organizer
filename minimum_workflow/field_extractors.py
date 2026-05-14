@@ -693,6 +693,16 @@ def looks_like_product_table_noise(value: str) -> bool:
     noise_keywords = ("序号", "名称", "产品名称", "项目", "型号", "规格", "参数", "参数项", "参数值", "单位", "数量", "备注", "工作表")
     if sum(1 for keyword in noise_keywords if keyword in stripped) >= 2:
         return True
+    # 检查是否包含重量、尺寸等参数信息
+    param_patterns = (
+        r"\d+\.?\d*\s*(?:千克|kg|公斤|克|g)",
+        r"\d+\.?\d*\s*(?:毫米|mm|厘米|cm|米|m)",
+        r"\d+\.?\d*\s*(?:伏|V|安|A|毫安|mAh)",
+        r"(?:配备|包含|不包含)",
+        r"(?:空机重量|最大轴距|外形尺寸)",
+    )
+    if any(re.search(pattern, stripped) for pattern in param_patterns):
+        return True
     return False
 
 
@@ -702,12 +712,27 @@ def infer_product_name(sample: SampleRecord, text: str) -> str:
         return labeled_name
     if sample.product_name_hint and not looks_like_product_table_noise(sample.product_name_hint):
         return sample.product_name_hint
-    fallback = first_match(text, [r"^\s*([^\n]*(?:气象仪|无人机|雷达|系统)[^\n]*)"], sample.subject_name_hint)
-    if looks_like_product_table_noise(fallback):
-        return sample.title_hint or sample.subject_name_hint
-    if looks_like_markdown_table_header(sample.title_hint):
-        return sample.subject_name_hint or ""
-    return fallback
+    # 从文件名中提取产品名称
+    title = sample.title_hint or ""
+    # 清理文件名中的常见后缀和无关词汇
+    suffix_pattern = r"(?:参数|规格|说明书|手册|画册|简介|介绍|资料|文档)$"
+    cleaned_title = re.sub(suffix_pattern, "", title).strip()
+    cleaned_title = re.sub(r"[_\-]\s*$", "", cleaned_title).strip()
+    # 从正文中提取产品名称（优先找包含产品关键词的行）
+    product_keywords = ("无人机", "飞行器", "雷达", "相机", "传感器", "机库", "清洗机", "检测仪", "气象站")
+    # 先在正文中找包含产品关键词的行
+    for line in text.split("\n")[:20]:  # 只看前20行
+        line = line.strip()
+        if not line or len(line) > 50:
+            continue
+        if any(keyword in line for keyword in product_keywords):
+            if not looks_like_product_table_noise(line):
+                return line
+    # 如果正文没找到，使用清理后的文件名
+    if cleaned_title and not looks_like_product_table_noise(cleaned_title):
+        return cleaned_title
+    # 最后使用subject_name_hint
+    return sample.subject_name_hint or ""
 
 
 def infer_product_model(sample: SampleRecord, text: str) -> str:
@@ -736,8 +761,11 @@ def infer_product_supplier(sample: SampleRecord, text: str) -> str:
     labeled_supplier = first_match(text, [r"供应商名称[:：]\s*([^\n]+)", r"生产单位[:：]\s*([^\n]+)"], "")
     if labeled_supplier:
         return labeled_supplier
-    company = first_match(text, [r"([^\n]{0,30}(?:有限公司|研究院|公司))"], "")
-    return company or sample.unit_name_hint or sample.subject_name_hint
+    # 只匹配以中文开头的紧凑公司名（2-15字），避免混入英文前缀
+    company = first_match(text, [r"(?:^|[^一-鿿])([一-鿿]{2,15}(?:有限公司|研究院|集团|公司))"], "")
+    if company:
+        return company
+    return sample.unit_name_hint or sample.subject_name_hint
 
 
 def infer_product_type(sample: SampleRecord, text: str) -> str:

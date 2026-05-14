@@ -203,6 +203,16 @@ def infer_document_title(blocks: list[str], source_name: str) -> str:
             return False
         if re.fullmatch(r"\d+[.、]\s*.+", line):
             return False
+        if re.fullmatch(r"\d+[)）]\s*.+", line):
+            return False
+        if line.endswith("|"):
+            return False
+        if re.fullmatch(r"20\d{2}[-/.]\d{1,2}(?:[-/.]\d{1,2})?\s*(?:实施|发布|印发)?\s*", line):
+            return False
+        # PDF 目录页提取出的 "章节名<空格>页码" 形式（前导编号 + 中文 + 末尾页码），
+        # 例如 "2 规范性引用文件 1"、"5.1 外观 3"，不应被当作文档标题。
+        if re.fullmatch(r"\d+(?:\.\d+)*\s+[\u4e00-\u9fff][^\d\n]{0,30}\s+\d{1,4}", line):
+            return False
         if re.fullmatch(r"第[一二三四五六七八九十百零〇]+[章节部分编]\s*.+", line):
             return False
         if re.fullmatch(r"模块[一二三四五六七八九十0-9]+(?:\s+Module\s*\d+)?\s*.*", line, re.IGNORECASE):
@@ -369,6 +379,18 @@ def infer_primary_organization(blocks: list[str], title: str) -> str:
     return ""
 
 
+def _valid_date_str(year: str, month: str, day: str | None = None) -> str:
+    month_int = int(month)
+    if month_int < 1 or month_int > 12:
+        return ""
+    if day is not None:
+        day_int = int(day)
+        if day_int < 1 or day_int > 31:
+            return ""
+        return f"{year}年{month_int}月{day_int}日"
+    return f"{year}年{month_int}月"
+
+
 def infer_document_date(blocks: list[str], source_name: str) -> str:
     if not blocks:
         blocks = []
@@ -384,20 +406,26 @@ def infer_document_date(blocks: list[str], source_name: str) -> str:
                 candidate = clean_paragraph_text(date_match.group(0))
                 if candidate.endswith("年") and "月" not in candidate and len(line) > len(candidate) + 6:
                     continue
-                return candidate
+                # 校验月份范围
+                m = re.match(r"(\d{4})年(\d{1,2})(?:月(\d{1,2})日?)?", candidate)
+                if m:
+                    validated = _valid_date_str(m.group(1), m.group(2), m.group(3))
+                    if validated:
+                        return validated
+                continue
             raw_date_match = re.search(r"20\d{2}[-/.]\d{1,2}(?:[-/.]\d{1,2})?", line)
             if raw_date_match:
                 year, month, *rest = re.split(r"[-/.]", raw_date_match.group(0))
-                if rest:
-                    return f"{year}年{int(month)}月{int(rest[0])}日"
-                return f"{year}年{int(month)}月"
+                validated = _valid_date_str(year, month, rest[0] if rest else None)
+                if validated:
+                    return validated
 
     source_date_match = re.search(r"20\d{2}[-/.]\d{1,2}(?:[-/.]\d{1,2})?", source_name)
     if source_date_match:
         year, month, *rest = re.split(r"[-/.]", source_date_match.group(0))
-        if rest:
-            return f"{year}年{int(month)}月{int(rest[0])}日"
-        return f"{year}年{int(month)}月"
+        validated = _valid_date_str(year, month, rest[0] if rest else None)
+        if validated:
+            return validated
     return ""
 
 
@@ -512,6 +540,17 @@ def infer_document_profile(source_name: str, blocks: list[str]) -> dict[str, str
         and low_altitude_catalog_title_hits >= 1
         and (low_altitude_catalog_content_hits >= 1 or "清单" in title or "清单" in source_base_name)
     )
+    # 强非政策标记：避免设计说明/对比表/技术要求等被规则误归为政策官方文件，
+    # 进而触发 should_skip_qwen_for_sample 的政策跳过分支，固化错误分类。
+    non_policy_filename_keywords = (
+        "设计说明", "施工方案", "技术方案", "技术要求", "技术规格",
+        "对比", "比较", "汇总表", "工作总结", "需求书", "需求表",
+        "实施方案", "整体规划", "范本",
+    )
+    is_non_policy_by_filename = any(kw in source_base_name for kw in non_policy_filename_keywords) or any(
+        kw in title for kw in non_policy_filename_keywords
+    )
+    is_non_policy_by_suffix = source_suffix in {".xlsx", ".xls"}
     has_policy_priority_signals = (
         (has_policy_cover_signals or policy_title_hits >= 2 or (policy_title_hits >= 1 and policy_content_hits >= 2))
         and not is_procurement_file
@@ -519,6 +558,8 @@ def infer_document_profile(source_name: str, blocks: list[str]) -> dict[str, str
         and not has_supplier_priority_signals
         and not has_solution_priority_signals
         and education_training_title_hits == 0
+        and not is_non_policy_by_filename
+        and not is_non_policy_by_suffix
     )
 
     if any(keyword in title for keyword in REFERENCE_TITLE_KEYWORDS):

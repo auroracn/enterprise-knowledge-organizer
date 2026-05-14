@@ -77,11 +77,17 @@ def build_page_excerpt_blocks(
     *,
     max_pages: int = 4,
     max_lines_per_page: int = 10,
-) -> str:
+    used_page_headings: set[str] | None = None,
+) -> tuple[str, set[str]]:
+    """提取包含关键词的页面内容，返回 (内容, 已使用的页面标题集合)"""
     if not text.strip():
-        return ""
+        return "", used_page_headings or set()
     blocks: list[str] = []
+    used_headings = used_page_headings or set()
     for page_heading, page_lines in split_extracted_pages(text):
+        # 跳过已使用的页面
+        if page_heading in used_headings:
+            continue
         page_text = "\n".join(page_lines)
         if not any(keyword in page_text for keyword in keywords):
             continue
@@ -89,164 +95,174 @@ def build_page_excerpt_blocks(
         if not block:
             continue
         blocks.append(block)
+        used_headings.add(page_heading)
         if len(blocks) >= max_pages:
             break
-    return "\n\n".join(blocks)
+    return "\n\n".join(blocks), used_headings
 
 
 def build_solution_deep_sections(payload: dict[str, Any]) -> list[tuple[str, str]]:
     full_text = normalize_multiline_text(payload.get("提取正文"))
-    return [
+    used_headings: set[str] = set()
+    sections: list[tuple[str, str]] = []
+
+    # 十一、行业背景与痛点原文
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
         (
-            "## 十一、行业背景与痛点原文",
-            build_page_excerpt_blocks(
-                full_text,
-                (
-                    "行业背景",
-                    "数字化转型",
-                    "市场规模",
-                    "趋势与挑战",
-                    "企业巡检现状",
-                    "安全痛点",
-                    "目标群体",
-                    "项目背景",
-                    "方案背景",
-                    "建设背景",
-                    "巡检现状",
-                    "痛点挑战",
-                    "政策背景",
-                    "现状与需求分析",
-                    "需求分析",
-                    "行业现状",
-                    "应用背景",
-                ),
-            ),
+            "行业背景", "数字化转型", "市场规模", "趋势与挑战", "企业巡检现状",
+            "安全痛点", "目标群体", "项目背景", "方案背景", "建设背景",
+            "巡检现状", "痛点挑战", "政策背景", "现状与需求分析", "需求分析",
+            "行业现状", "应用背景",
         ),
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 十一、行业背景与痛点原文", content))
+
+    # 十二、方案架构与巡检流程原文
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
         (
-            "## 十二、方案架构与巡检流程原文",
-            build_page_excerpt_blocks(
-                full_text,
-                (
-                    "整体架构",
-                    "巡检流程",
-                    "巡检规划",
-                    "巡检平台",
-                    "巡检任务",
-                    "巡检路线",
-                    "报警规则",
-                    "数据传输",
-                    "技术方案",
-                    "业务架构",
-                    "系统架构",
-                    "方案设计",
-                    "总体方案",
-                    "智能巡视方案设计",
-                    "方案架构",
-                    "侦察方案",
-                    "灭火方案",
-                    "通信保障方案",
-                ),
-            ),
+            "整体架构", "巡检流程", "巡检规划", "巡检平台", "巡检任务",
+            "巡检路线", "报警规则", "数据传输", "技术方案", "业务架构",
+            "系统架构", "方案设计", "总体方案", "智能巡视方案设计", "方案架构",
+            "侦察方案", "灭火方案", "通信保障方案",
         ),
-        (
-            "## 十三、产品资料与能力细节",
-            build_page_excerpt_blocks(
-                full_text,
-                ("产品介绍", "核心产品", "产品发展线", "方案优势", "绝影", "X30", "M20", "IP67", "IP66", "激光雷达", "深度相机", "热插拔换电", "产品生态", "巡逻机器人", "机器狗总体介绍"),
-                max_pages=5,
-            ),
-        ),
-        (
-            "## 十四、应用实例与落地线索",
-            build_page_excerpt_blocks(
-                full_text,
-                ("应用实例", "应用案例", "项目案例", "案例介绍", "海外行业应用落地", "变电站巡检", "应急使命", "安防巡逻", "其他应用", "落地应用", "行业应用"),
-                max_pages=5,
-            ),
-        ),
-    ]
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 十二、方案架构与巡检流程原文", content))
+
+    # 十三、产品资料与能力细节
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("产品介绍", "核心产品", "产品发展线", "方案优势", "绝影", "X30", "M20", "IP67", "IP66", "激光雷达", "深度相机", "热插拔换电", "产品生态", "巡逻机器人", "机器狗总体介绍"),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 十三、产品资料与能力细节", content))
+
+    # 十四、应用实例与落地线索
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("应用实例", "应用案例", "项目案例", "案例介绍", "海外行业应用落地", "变电站巡检", "应急使命", "安防巡逻", "其他应用", "落地应用", "行业应用"),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 十四、应用实例与落地线索", content))
+
+    return sections
 
 
 def build_supplier_deep_sections(payload: dict[str, Any]) -> list[tuple[str, str]]:
     full_text = normalize_multiline_text(payload.get("提取正文"))
-    return [
-        (
-            "## 五、发展历程与关键节点",
-            build_page_excerpt_blocks(
-                full_text,
-                ("发展历程", "公司成立", "专精特新", "小巨人", "Science Robotics", "国家高新技术企业"),
-                max_pages=4,
-            ),
-        ),
-        (
-            "## 六、荣誉资质与标准线索",
-            build_page_excerpt_blocks(
-                full_text,
-                ("荣誉资质", "标准制定", "国家级标准", "专利授权", "专利申请", "团体标准"),
-                max_pages=4,
-            ),
-        ),
-        (
-            "## 七、创始人与团队线索",
-            build_page_excerpt_blocks(
-                full_text,
-                ("创始人简介", "创始人&CEO", "联合创始人&CTO", "人才优势", "研发人员占比"),
-                max_pages=4,
-            ),
-        ),
-        (
-            "## 八、分支机构与布局覆盖",
-            build_page_excerpt_blocks(
-                full_text,
-                ("分支机构", "国内布局", "全球布局", "全球影响力", "客户与合作伙伴"),
-                max_pages=4,
-            ),
-        ),
-        (
-            "## 九、产品生态与应用线索",
-            build_page_excerpt_blocks(
-                full_text,
-                ("核心产品", "产品介绍", "产品生态", "行业应用", "应用案例", "绝影 X30", "山猫M20", "绝影 Lite3"),
-                max_pages=5,
-            ),
-        ),
-    ]
+    used_headings: set[str] = set()
+    sections: list[tuple[str, str]] = []
+
+    # 五、发展历程与关键节点
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("发展历程", "公司成立", "专精特新", "小巨人", "Science Robotics", "国家高新技术企业"),
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 五、发展历程与关键节点", content))
+
+    # 六、荣誉资质与标准线索
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("荣誉资质", "标准制定", "国家级标准", "专利授权", "专利申请", "团体标准"),
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 六、荣誉资质与标准线索", content))
+
+    # 七、创始人与团队线索
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("创始人简介", "创始人&CEO", "联合创始人&CTO", "人才优势", "研发人员占比"),
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 七、创始人与团队线索", content))
+
+    # 八、分支机构与布局覆盖
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("分支机构", "国内布局", "全球布局", "全球影响力", "客户与合作伙伴"),
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 八、分支机构与布局覆盖", content))
+
+    # 九、产品生态与应用线索
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("核心产品", "产品介绍", "产品生态", "行业应用", "应用案例", "绝影 X30", "山猫M20", "绝影 Lite3"),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 九、产品生态与应用线索", content))
+
+    return sections
 
 
 def build_education_training_deep_sections(payload: dict[str, Any]) -> list[tuple[str, str]]:
     full_text = normalize_multiline_text(payload.get("提取正文"))
-    return [
-        (
-            "## 九、课程体系与合作模式原文",
-            build_page_excerpt_blocks(
-                full_text,
-                ("产教融合", "课程体系", "教学", "实训", "科研", "竞赛", "合作目标", "合作定位", "联合实验室", "实验室介绍"),
-                max_pages=5,
-            ),
-        ),
-        (
-            "## 十、配套产品资料",
-            build_page_excerpt_blocks(
-                full_text,
-                ("配套产品介绍", "产品介绍", "核心产品", "绝影", "Lite", "Lite3", "实训台", "产品发展线"),
-                max_pages=4,
-            ),
-        ),
-        (
-            "## 十一、应用实例与案例线索",
-            build_page_excerpt_blocks(
-                full_text,
-                ("应用实例", "案例介绍", "合作案例", "校园巡检", "教育科研", "电力巡检", "应急消防", "安防巡逻", "其他应用"),
-                max_pages=5,
-            ),
-        ),
-    ]
+    used_headings: set[str] = set()
+    sections: list[tuple[str, str]] = []
+
+    # 九、课程体系与合作模式原文
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("产教融合", "课程体系", "教学", "实训", "科研", "竞赛", "合作目标", "合作定位", "联合实验室", "实验室介绍"),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 九、课程体系与合作模式原文", content))
+
+    # 十、配套产品资料
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("配套产品介绍", "产品介绍", "核心产品", "绝影", "Lite", "Lite3", "实训台", "产品发展线"),
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 十、配套产品资料", content))
+
+    # 十一、应用实例与案例线索
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
+        ("应用实例", "案例介绍", "合作案例", "校园巡检", "教育科研", "电力巡检", "应急消防", "安防巡逻", "其他应用"),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 十一、应用实例与案例线索", content))
+
+    return sections
 
 
 def append_rich_markdown_section(lines: list[str], heading: str, content: str) -> None:
+    if not content.strip():
+        return  # 空内容直接跳过，不留占位符
     lines.extend([
+        "---",
+        "",
         heading,
-        content.strip() if content.strip() else "- 未提取",
+        content.strip(),
         "",
     ])
 
@@ -254,19 +270,18 @@ def append_rich_markdown_section(lines: list[str], heading: str, content: str) -
 def append_full_text_section(lines: list[str], payload: dict[str, Any]) -> None:
     full_text = normalize_multiline_text(payload.get("提取正文")).strip()
     if not full_text:
-        lines.extend([
-            "## 原文全文",
-            "未提取",
-            "",
-        ])
-        return
+        return  # 无原文直接跳过
     filtered = "\n".join(
         line for line in full_text.splitlines()
         if not re.match(r"^\s*https?://localhost\S*\s*$", line)
     ).strip()
+    if not filtered:
+        return
     lines.extend([
+        "---",
+        "",
         "## 原文全文",
-        filtered or "未提取",
+        filtered,
         "",
     ])
 
@@ -274,26 +289,38 @@ def append_full_text_section(lines: list[str], payload: dict[str, Any]) -> None:
 def build_policy_sections(payload: dict[str, Any]) -> dict[str, str]:
     text = payload.get("文本预览", "") or ""
     core_tasks = payload.get("核心任务", []) or []
-    core_task_text = "；".join(core_tasks) if core_tasks else "待根据正文补充。"
+    # 核心要求：每个条目单独一行，避免分号冲突
+    if core_tasks:
+        core_task_text = "\n".join(f"- {task}" for task in core_tasks)
+    else:
+        core_task_text = ""
     title = payload.get("文件标题") or payload.get("标题") or "未命名政策文件"
-    document_number = payload.get("发文字号") or "未提取"
-    issuing_unit = payload.get("发文单位") or payload.get("单位名称") or "未提取"
-    issue_date = payload.get("成文日期") or "未提取"
-    effective_status = payload.get("生效状态") or "未注明"
+    document_number = payload.get("发文字号") or ""
+    issuing_unit = payload.get("发文单位") or payload.get("单位名称") or ""
+    issue_date = payload.get("成文日期") or ""
+    effective_status = payload.get("生效状态") or ""
     if not text:
         return {
             "文件摘要": f"{title}，当前尚未提取到可用正文。",
             "核心要求": core_task_text,
-            "业务相关": "待根据正文补充。",
-            "执行意义": "待根据正文补充。",
-            "时效边界": f"生效状态：{effective_status}。待结合正式来源进一步确认。",
+            "业务相关": "",
+            "执行意义": "",
+            "时效边界": f"生效状态：{effective_status}。" if effective_status else "",
         }
+    # 构建摘要：只包含有值的字段
+    summary_parts = [f"文件标题：{title}"]
+    if document_number:
+        summary_parts.append(f"发文字号：{document_number}")
+    if issuing_unit:
+        summary_parts.append(f"发文单位：{issuing_unit}")
+    if issue_date:
+        summary_parts.append(f"成文日期：{issue_date}")
     return {
-        "文件摘要": f"文件标题：{title}；发文字号：{document_number}；发文单位：{issuing_unit}；成文日期：{issue_date}。",
+        "文件摘要": "；".join(summary_parts) + "。",
         "核心要求": core_task_text,
-        "业务相关": "当前为政策类首轮样例，后续需结合长风业务场景补条目映射。",
-        "执行意义": "当前文本已进入结构化最小闭环，可作为后续规则判断、模板填充和政策任务拆条输入。",
-        "时效边界": f"生效状态：{effective_status}。若为整理稿或转载稿，正式落库前仍需回核正式来源与有效状态。",
+        "业务相关": "",
+        "执行意义": "",
+        "时效边界": f"生效状态：{effective_status}。若为整理稿或转载稿，正式落库前仍需回核正式来源与有效状态。" if effective_status else "",
     }
 
 
@@ -504,14 +531,17 @@ def build_price_quote_sections(payload: dict[str, Any]) -> dict[str, str]:
             else:
                 parts.append(str(item))
         items_text = "\n".join(parts) if parts else "未提取"
+    # 清理报价主体字段的特殊字符
+    raw_subject = payload.get("报价主体字段", "") or ""
+    cleaned_subject = re.sub(r"^[|｜\s]+", "", raw_subject).strip()
     return {
         "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
-        "报价单名称": payload.get("报价单名称字段", "未提取") or "未提取",
-        "报价主体": payload.get("报价主体字段", "未提取") or "未提取",
+        "报价单名称": payload.get("报价单名称字段", "") or "",
+        "报价主体": cleaned_subject or "",
         "产品型号价格": items_text,
-        "有效期": payload.get("有效期字段", "未提取") or "未提取",
-        "报价日期": payload.get("报价日期字段", "未提取") or "未提取",
-        "价格类型": payload.get("价格类型字段", "未提取") or "未提取",
+        "有效期": payload.get("有效期字段", "") or "",
+        "报价日期": payload.get("报价日期字段", "") or "",
+        "价格类型": payload.get("价格类型字段", "") or "",
     }
 
 
@@ -543,41 +573,49 @@ def build_industry_knowledge_sections(payload: dict[str, Any]) -> dict[str, str]
 
 def build_industry_knowledge_deep_sections(payload: dict[str, Any]) -> list[tuple[str, str]]:
     full_text = normalize_multiline_text(payload.get("提取正文"))
-    return [
+    used_headings: set[str] = set()
+    sections: list[tuple[str, str]] = []
+
+    # 七、产业链结构原文
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
         (
-            "## 七、产业链结构原文",
-            build_page_excerpt_blocks(
-                full_text,
-                (
-                    "产业链", "上游", "中游", "下游", "全产业链", "价值链",
-                    "供应链", "产业结构", "产业图谱", "产业生态",
-                ),
-                max_pages=5,
-            ),
+            "产业链", "上游", "中游", "下游", "全产业链", "价值链",
+            "供应链", "产业结构", "产业图谱", "产业生态",
         ),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 七、产业链结构原文", content))
+
+    # 八、市场规模与竞争格局原文
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
         (
-            "## 八、市场规模与竞争格局原文",
-            build_page_excerpt_blocks(
-                full_text,
-                (
-                    "市场规模", "竞争格局", "市场份额", "行业格局",
-                    "细分市场", "赛道", "产业集群", "行业壁垒",
-                ),
-                max_pages=5,
-            ),
+            "市场规模", "竞争格局", "市场份额", "行业格局",
+            "细分市场", "赛道", "产业集群", "行业壁垒",
         ),
+        max_pages=5,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 八、市场规模与竞争格局原文", content))
+
+    # 九、发展趋势与政策驱动原文
+    content, used_headings = build_page_excerpt_blocks(
+        full_text,
         (
-            "## 九、发展趋势与政策驱动原文",
-            build_page_excerpt_blocks(
-                full_text,
-                (
-                    "发展趋势", "行业趋势", "未来趋势", "政策驱动",
-                    "产业政策", "行业驱动力", "增长预测", "投资方向",
-                ),
-                max_pages=4,
-            ),
+            "发展趋势", "行业趋势", "未来趋势", "政策驱动",
+            "产业政策", "行业驱动力", "增长预测", "投资方向",
         ),
-    ]
+        max_pages=4,
+        used_page_headings=used_headings,
+    )
+    if content.strip():
+        sections.append(("## 九、发展趋势与政策驱动原文", content))
+
+    return sections
 
 
 FIELD_DISPLAY_LABELS = {
@@ -1027,32 +1065,26 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
     if not cleaned_title:
         cleaned_title = str(payload.get("原始文件名", "") or "").strip() or "未命名资料"
 
-    lines = [
-        f"# {cleaned_title}",
-        "",
-        "## 元数据",
-        f"- 原始文件名：{payload['原始文件名']}",
-        f"- 原始路径：{payload['原始路径']}",
-        f"- 文档分类：{payload['文档分类']}",
-        f"- 推荐模板：{payload['推荐模板']}",
-    ]
+    # YAML frontmatter
+    lines = ["---"]
+    lines.append(f"source_filename: {normalize_frontmatter_value(payload.get('原始文件名'))}")
+    lines.append(f"source_path: {normalize_frontmatter_value(payload.get('原始路径'))}")
+    lines.append(f"doc_category: {normalize_frontmatter_value(payload.get('文档分类'))}")
+    lines.append(f"template: {normalize_frontmatter_value(payload.get('推荐模板'))}")
     if not is_empty_payload_value(payload.get("知识库分类")):
-        lines.append(f"- 知识库分类：{format_markdown_value(payload.get('知识库分类'))}")
+        lines.append(f"kb_category: {normalize_frontmatter_value(payload.get('知识库分类'))}")
     if not is_empty_payload_value(payload.get("分类来源")):
-        lines.append(f"- 分类来源：{format_markdown_value(payload.get('分类来源'))}")
+        lines.append(f"classification_source: {normalize_frontmatter_value(payload.get('分类来源'))}")
     if not is_empty_payload_value(payload.get("人工审核状态")):
-        lines.append(f"- 人工审核状态：{format_markdown_value(payload.get('人工审核状态'))}")
+        lines.append(f"review_status: {normalize_frontmatter_value(payload.get('人工审核状态'))}")
     if not is_empty_payload_value(payload.get("人工审核时间")):
-        lines.append(f"- 人工审核时间：{format_markdown_value(payload.get('人工审核时间'))}")
-    for label, key in (
-        ("一级分类", "一级分类"),
-        ("二级分类", "二级分类"),
-        ("分类置信度", "分类置信度"),
-        ("分类依据", "分类依据"),
-    ):
+        lines.append(f"review_time: {normalize_frontmatter_value(payload.get('人工审核时间'))}")
+    for key in ("一级分类", "二级分类", "分类置信度", "分类依据"):
         value = payload.get(key)
         if not is_empty_payload_value(value):
-            lines.append(f"- {label}：{format_markdown_value(value)}")
+            lines.append(f"{key}: {normalize_frontmatter_value(value)}")
+    lines.extend(["---", ""])
+    lines.append(f"# {cleaned_title}")
     lines.append("")
 
     if payload.get("推荐模板") == "政策官方文件模板":
@@ -1062,27 +1094,62 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             "## 一、文件摘要",
             f"- {sections['文件摘要']}",
             "",
-            "## 二、核心要求",
-            f"- {sections['核心要求']}",
-            "",
-            "## 三、与低空/长风业务相关的部分",
-            f"- {sections['业务相关']}",
-            "",
-            "## 四、执行或应用意义",
-            f"- {sections['执行意义']}",
+        ])
+        # 核心要求：支持多行格式
+        if sections['核心要求']:
+            lines.extend(["---", "", "## 二、核心要求"])
+            if sections['核心要求'].startswith("- "):
+                # 多行格式
+                lines.append(sections['核心要求'])
+            else:
+                # 单行格式
+                lines.append(f"- {sections['核心要求']}")
+            lines.append("")
+        # 业务相关、执行意义有内容才输出
+        if sections['业务相关']:
+            lines.extend([
+                "---",
+                "",
+                "## 三、与低空/长风业务相关的部分",
+                f"- {sections['业务相关']}",
+                "",
+            ])
+        if sections['执行意义']:
+            lines.extend([
+                "---",
+                "",
+                "## 四、执行或应用意义",
+                f"- {sections['执行意义']}",
+                "",
+            ])
+        lines.extend([
+            "---",
             "",
             "## 五、时效与边界",
             f"- {sections['时效边界']}",
             "",
-            "## 六、字段提取结果",
-            f"- 文件标题：{payload.get('文件标题', '')}",
-            f"- 发文字号：{payload.get('发文字号', '')}",
-            f"- 发文单位：{payload.get('发文单位', '')}",
-            f"- 成文日期：{payload.get('成文日期', '')}",
-            f"- 生效状态：{payload.get('生效状态', '')}",
-            f"- 核心任务：{'；'.join(core_tasks) if core_tasks else '未提取'}",
-            "",
         ])
+        # 字段提取结果：只输出前面章节未展示的字段
+        field_lines = []
+        if payload.get('文件标题'):
+            field_lines.append(f"- 文件标题：{payload['文件标题']}")
+        if payload.get('发文字号'):
+            field_lines.append(f"- 发文字号：{payload['发文字号']}")
+        if payload.get('发文单位'):
+            field_lines.append(f"- 发文单位：{payload['发文单位']}")
+        if payload.get('成文日期'):
+            field_lines.append(f"- 成文日期：{payload['成文日期']}")
+        if payload.get('生效状态'):
+            field_lines.append(f"- 生效状态：{payload['生效状态']}")
+        # 核心任务已在前面章节展示，跳过避免重复
+        if field_lines:
+            lines.extend([
+                "---",
+                "",
+                "## 六、字段提取结果",
+                *field_lines,
+                "",
+            ])
     elif payload.get("推荐模板") == "供应商企业模板":
         sections = build_supplier_sections(payload)
         if sections["企业摘要"]:
@@ -1099,6 +1166,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             supplier_direction_lines.append(f"- 核心能力：{sections['核心能力']}")
         if supplier_direction_lines:
             lines.extend([
+                "---",
+                "",
                 "## 二、主营方向与能力",
                 *supplier_direction_lines,
                 "",
@@ -1106,26 +1175,10 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
 
         if sections["核心产品"]:
             lines.extend([
+                "---",
+                "",
                 "## 三、代表产品或服务",
                 f"- 核心产品：{sections['核心产品']}",
-                "",
-            ])
-
-        supplier_field_lines: list[str] = []
-        if sections["企业名称"]:
-            supplier_field_lines.append(f"- 企业名称：{sections['企业名称']}")
-        if sections["企业类别"]:
-            supplier_field_lines.append(f"- 企业类别：{sections['企业类别']}")
-        if sections["主营方向"]:
-            supplier_field_lines.append(f"- 主营方向：{sections['主营方向']}")
-        if sections["核心产品"]:
-            supplier_field_lines.append(f"- 核心产品：{sections['核心产品']}")
-        if sections["核心能力"]:
-            supplier_field_lines.append(f"- 核心能力：{sections['核心能力']}")
-        if supplier_field_lines:
-            lines.extend([
-                "## 四、字段提取结果",
-                *supplier_field_lines,
                 "",
             ])
 
@@ -1165,7 +1218,7 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
         if _sol("应用背景"):
             lines.extend(["## 一、应用背景", f"- {_sol('应用背景')}", ""])
         if _sol("解决问题"):
-            lines.extend(["## 二、解决的问题", f"- {_sol('解决问题')}", ""])
+            lines.extend(["---", "", "## 二、解决的问题", f"- {_sol('解决问题')}", ""])
         if _sol("资料形态") or payload.get("是否需要拆分"):
             sub = []
             if _sol("资料形态"):
@@ -1175,34 +1228,31 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
                 if payload.get("拆分说明"):
                     sub.append(f"- 拆分说明：{payload['拆分说明']}")
             if sub:
-                lines.extend(["## 三、资料形态判断", *sub, ""])
+                lines.extend(["---", "", "## 三、资料形态判断", *sub, ""])
         if _sol("产品能力"):
-            lines.extend(["## 四、投入的产品/设备/能力", f"- {_sol('产品能力')}", ""])
+            lines.extend(["---", "", "## 四、投入的产品/设备/能力", f"- {_sol('产品能力')}", ""])
         if _sol("实施方式"):
-            lines.extend(["## 五、实施方式", f"- {_sol('实施方式')}", ""])
+            lines.extend(["---", "", "## 五、实施方式", f"- {_sol('实施方式')}", ""])
         if _sol("预算组织"):
-            lines.extend(["## 六、预算、进度与组织方式", f"- {_sol('预算组织')}", ""])
+            lines.extend(["---", "", "## 六、预算、进度与组织方式", f"- {_sol('预算组织')}", ""])
         if _sol("效果数据"):
-            lines.extend(["## 七、结果与效果数据", f"- {_sol('效果数据')}", ""])
+            lines.extend(["---", "", "## 七、结果与效果数据", f"- {_sol('效果数据')}", ""])
         if _sol("可复用经验"):
-            lines.extend(["## 八、可复用经验", f"- {_sol('可复用经验')}", ""])
+            lines.extend(["---", "", "## 八、可复用经验", f"- {_sol('可复用经验')}", ""])
 
+        # 字段提取结果：只输出前面章节未展示的字段
         sol_field_map = [
             ("方案名称", payload.get('方案名称字段')),
             ("所属场景", payload.get('所属场景字段')),
             ("客户/使用单位", payload.get('客户名称字段')),
             ("文件日期", payload.get('文件日期字段')),
-            ("解决的问题", payload.get('解决问题字段')),
-            ("投入的产品/设备/能力", payload.get('产品能力字段')),
-            ("实施方式", payload.get('实施方式字段')),
-            ("预算、进度与组织方式", payload.get('预算组织字段')),
-            ("结果与效果数据", payload.get('效果数据字段')),
-            ("可复用经验", payload.get('可复用经验字段')),
+            # 以下字段已在前面章节展示，跳过避免重复
+            # 解决的问题、投入的产品/设备/能力、实施方式、预算、进度与组织方式、结果与效果数据、可复用经验
             ("证据类型", payload.get('证据类型字段')),
         ]
         sol_field_lines = [f"- {lbl}：{val}" for lbl, val in sol_field_map if not is_empty_payload_value(val)]
         if sol_field_lines:
-            lines.extend(["## 九、字段提取结果", *sol_field_lines, ""])
+            lines.extend(["---", "", "## 九、字段提取结果", *sol_field_lines, ""])
         for heading, content in build_solution_deep_sections(payload):
             if content.strip():
                 append_rich_markdown_section(lines, heading, content)
@@ -1216,21 +1266,28 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
 
         if sections["核心用途"]:
             lines.extend([
+                "---",
+                "",
                 "## 二、核心用途",
                 f"- {sections['核心用途']}",
                 "",
             ])
 
-        lines.extend([
-            "## 三、资料形态判断",
-            f"- 当前更像：{sections['资料形态'] or '未提取'}",
-            f"- 是否需要拆分：{'是' if payload['是否需要拆分'] else '否'}",
-            f"- 拆分说明：{payload['拆分说明']}",
-            "",
-        ])
+        if sections["资料形态"] or payload.get("是否需要拆分"):
+            sub = []
+            if sections["资料形态"]:
+                sub.append(f"- 当前更像：{sections['资料形态']}")
+            if payload.get("是否需要拆分"):
+                sub.append(f"- 是否需要拆分：是")
+                if payload.get("拆分说明"):
+                    sub.append(f"- 拆分说明：{payload['拆分说明']}")
+            if sub:
+                lines.extend(["---", "", "## 三、资料形态判断", *sub, ""])
 
         if sections["核心参数"]:
             lines.extend([
+                "---",
+                "",
                 "## 四、核心参数",
                 f"- {sections['核心参数']}",
                 "",
@@ -1238,6 +1295,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
 
         if sections["适用场景"]:
             lines.extend([
+                "---",
+                "",
                 "## 五、适用场景",
                 f"- {sections['适用场景']}",
                 "",
@@ -1245,11 +1304,14 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
 
         if sections["搭配关系"]:
             lines.extend([
+                "---",
+                "",
                 "## 六、搭配、替代与挂载关系",
                 f"- {sections['搭配关系']}",
                 "",
             ])
 
+        # 字段提取结果：只输出有值的字段，且不与前面章节重复
         product_field_lines: list[str] = []
         if format_product_optional_value(payload.get('产品名称字段')):
             product_field_lines.append(f"- 产品名称：{format_product_optional_value(payload.get('产品名称字段'))}")
@@ -1259,14 +1321,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             product_field_lines.append(f"- 供应商名称：{format_product_optional_value(payload.get('供应商名称字段'))}")
         if format_product_optional_value(payload.get('产品类别字段')):
             product_field_lines.append(f"- 产品类别：{format_product_optional_value(payload.get('产品类别字段'))}")
-        if sections["核心用途"]:
-            product_field_lines.append(f"- 核心用途：{sections['核心用途']}")
-        if sections["核心参数"]:
-            product_field_lines.append(f"- 核心参数：{sections['核心参数']}")
-        if sections["适用场景"]:
-            product_field_lines.append(f"- 适用场景：{sections['适用场景']}")
-        if sections["搭配关系"]:
-            product_field_lines.append(f"- 搭配关系：{sections['搭配关系']}")
+        # 以下字段已在前面章节展示，跳过避免重复
+        # 核心用途、核心参数、适用场景、搭配关系
         if format_product_optional_value(payload.get('产品证据类型字段')):
             product_field_lines.append(f"- 证据类型：{format_product_optional_value(payload.get('产品证据类型字段'))}")
         if format_product_optional_value(payload.get('报告文档类型字段')):
@@ -1287,6 +1343,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             product_field_lines.append(f"- 有效期至：{format_product_optional_value(payload.get('有效期至字段'))}")
         if product_field_lines:
             lines.extend([
+                "---",
+                "",
                 "## 七、字段提取结果",
                 *product_field_lines,
                 "",
@@ -1297,60 +1355,37 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             "## 一、资料摘要",
             f"- {sections['资料摘要']}",
             "",
-            "## 二、培训主题",
-            f"- {sections['培训主题'] or '未提取'}",
-            "",
-            "## 三、适用对象",
-            f"- {sections['适用对象'] or '未提取'}",
-            "",
-            "## 四、培训类型",
-            f"- {sections['培训类型'] or '未提取'}",
-            "",
-            "## 五、专业方向/课程体系",
         ])
-        if sections["专业方向"]:
-            lines.append(f"- 专业方向：{sections['专业方向']}")
-        if sections["课程体系"]:
-            lines.append(f"- 课程体系：{sections['课程体系']}")
-        if not sections["专业方向"] and not sections["课程体系"]:
-            lines.append("- 未提取")
-        lines.extend(["",])
-
+        if sections['培训主题']:
+            lines.extend(["---", "", "## 二、培训主题", f"- {sections['培训主题']}", ""])
+        if sections['适用对象']:
+            lines.extend(["---", "", "## 三、适用对象", f"- {sections['适用对象']}", ""])
+        if sections['培训类型']:
+            lines.extend(["---", "", "## 四、培训类型", f"- {sections['培训类型']}", ""])
+        if sections["专业方向"] or sections["课程体系"]:
+            lines.extend(["---", "", "## 五、专业方向/课程体系"])
+            if sections["专业方向"]:
+                lines.append(f"- 专业方向：{sections['专业方向']}")
+            if sections["课程体系"]:
+                lines.append(f"- 课程体系：{sections['课程体系']}")
+            lines.append("")
         if sections["实施方式"]:
-            lines.extend([
-                "## 六、实施方式",
-                f"- {sections['实施方式']}",
-                "",
-            ])
-
+            lines.extend(["---", "", "## 六、实施方式", f"- {sections['实施方式']}", ""])
         if sections["核心内容"]:
-            lines.extend([
-                "## 七、核心内容",
-                f"- {sections['核心内容']}",
-                "",
-            ])
+            lines.extend(["---", "", "## 七、核心内容", f"- {sections['核心内容']}", ""])
 
+        # 字段提取结果：只输出前面章节未展示的字段
         education_field_lines: list[str] = []
         if format_education_optional_value(payload.get('文件标题')):
             education_field_lines.append(f"- 文件标题：{format_education_optional_value(payload.get('文件标题'))}")
         if format_education_optional_value(payload.get('单位名称字段')):
             education_field_lines.append(f"- 单位名称：{format_education_optional_value(payload.get('单位名称字段'))}")
-        if sections["培训主题"]:
-            education_field_lines.append(f"- 培训主题：{sections['培训主题']}")
-        if sections["适用对象"]:
-            education_field_lines.append(f"- 适用对象：{sections['适用对象']}")
-        if sections["培训类型"]:
-            education_field_lines.append(f"- 培训类型：{sections['培训类型']}")
-        if sections["专业方向"]:
-            education_field_lines.append(f"- 专业方向：{sections['专业方向']}")
-        if sections["课程体系"]:
-            education_field_lines.append(f"- 课程体系：{sections['课程体系']}")
-        if sections["实施方式"]:
-            education_field_lines.append(f"- 实施方式：{sections['实施方式']}")
-        if sections["核心内容"]:
-            education_field_lines.append(f"- 核心内容：{sections['核心内容']}")
+        # 以下字段已在前面章节展示，跳过避免重复
+        # 培训主题、适用对象、培训类型、专业方向、课程体系、实施方式、核心内容
         if education_field_lines:
             lines.extend([
+                "---",
+                "",
                 "## 八、字段提取结果",
                 *education_field_lines,
                 "",
@@ -1363,90 +1398,106 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             "## 一、资料摘要",
             f"- {sections['资料摘要']}",
             "",
-            "## 二、采购方式与预算",
-            f"- 采购方式：{sections['采购方式']}",
-            f"- 预算/最高限价：{sections['预算限价']}",
-            "",
-            "## 三、评分办法",
-            f"- {sections['评分办法']}",
-            "",
-            "## 四、采购需求摘要",
-            f"- {sections['采购需求']}",
-            "",
-            "## 五、字段提取结果",
-            f"- 文件标题：{payload.get('文件标题', '')}",
-            f"- 项目编号：{payload.get('项目编号字段', '')}",
-            f"- 采购人：{payload.get('采购人字段', '')}",
-            f"- 采购代理机构：{payload.get('采购代理机构字段', '')}",
-            f"- 采购方式：{payload.get('采购方式字段', '')}",
-            f"- 文件日期：{payload.get('文件日期字段', '')}",
-            f"- 预算/最高限价：{payload.get('预算最高限价字段', '')}",
-            f"- 评分办法：{payload.get('评分办法字段', '')}",
-            f"- 采购需求摘要：{payload.get('采购需求摘要字段', '')}",
-            "",
         ])
+        if sections['采购方式'] != '未提取' or sections['预算限价'] != '未提取':
+            lines.extend([
+                "---",
+                "",
+                "## 二、采购方式与预算",
+            ])
+            if sections['采购方式'] != '未提取':
+                lines.append(f"- 采购方式：{sections['采购方式']}")
+            if sections['预算限价'] != '未提取':
+                lines.append(f"- 预算/最高限价：{sections['预算限价']}")
+            lines.append("")
+        if sections['评分办法'] != '未提取':
+            lines.extend(["---", "", "## 三、评分办法", f"- {sections['评分办法']}", ""])
+        if sections['采购需求'] != '未提取':
+            lines.extend(["---", "", "## 四、采购需求摘要", f"- {sections['采购需求']}", ""])
+        # 字段提取结果：只输出有值的字段
+        field_lines = []
+        if payload.get('文件标题'):
+            field_lines.append(f"- 文件标题：{payload['文件标题']}")
+        if payload.get('项目编号字段'):
+            field_lines.append(f"- 项目编号：{payload['项目编号字段']}")
+        if payload.get('采购人字段'):
+            field_lines.append(f"- 采购人：{payload['采购人字段']}")
+        if payload.get('采购代理机构字段'):
+            field_lines.append(f"- 采购代理机构：{payload['采购代理机构字段']}")
+        if payload.get('采购方式字段'):
+            field_lines.append(f"- 采购方式：{payload['采购方式字段']}")
+        if payload.get('文件日期字段'):
+            field_lines.append(f"- 文件日期：{payload['文件日期字段']}")
+        if payload.get('预算最高限价字段'):
+            field_lines.append(f"- 预算/最高限价：{payload['预算最高限价字段']}")
+        if payload.get('评分办法字段'):
+            field_lines.append(f"- 评分办法：{payload['评分办法字段']}")
+        if payload.get('采购需求摘要字段'):
+            field_lines.append(f"- 采购需求摘要：{payload['采购需求摘要字段']}")
+        if field_lines:
+            lines.extend(["---", "", "## 五、字段提取结果", *field_lines, ""])
     elif payload.get("推荐模板") == "合同商务模板":
         sections = build_contract_sections(payload)
         lines.extend([
             "## 一、资料摘要",
             f"- {sections['资料摘要']}",
             "",
-            "## 二、合同基本信息",
-            f"- 合同名称：{sections['合同名称']}",
-            f"- 合同编号：{sections['合同编号']}",
-            f"- 合同类型：{sections['合同类型']}",
-            f"- 签订日期：{sections['签订日期']}",
-            "",
-            "## 三、合同主体",
-            f"- 甲方：{sections['甲方']}",
-            f"- 乙方：{sections['乙方']}",
-            "",
-            "## 四、合同标的与金额",
-            f"- 合同标的：{sections['合同标的']}",
-            f"- 合同金额：{sections['合同金额']}",
-            f"- 合同期限：{sections['合同期限']}",
-            f"- 履约状态：{sections['履约状态']}",
-            "",
-            "## 五、字段提取结果",
-            f"- 文件标题：{payload.get('文件标题', '')}",
-            f"- 合同名称：{sections['合同名称']}",
-            f"- 合同编号：{sections['合同编号']}",
-            f"- 合同类型：{sections['合同类型']}",
-            f"- 甲方：{sections['甲方']}",
-            f"- 乙方：{sections['乙方']}",
-            f"- 合同金额：{sections['合同金额']}",
-            f"- 合同期限：{sections['合同期限']}",
-            f"- 签订日期：{sections['签订日期']}",
-            f"- 合同标的：{sections['合同标的']}",
-            f"- 履约状态：{sections['履约状态']}",
-            "",
         ])
+        # 合同基本信息
+        contract_info_lines = []
+        if sections['合同名称'] != '未提取':
+            contract_info_lines.append(f"- 合同名称：{sections['合同名称']}")
+        if sections['合同编号'] != '未提取':
+            contract_info_lines.append(f"- 合同编号：{sections['合同编号']}")
+        if sections['合同类型'] != '未提取':
+            contract_info_lines.append(f"- 合同类型：{sections['合同类型']}")
+        if sections['签订日期'] != '未提取':
+            contract_info_lines.append(f"- 签订日期：{sections['签订日期']}")
+        if contract_info_lines:
+            lines.extend(["---", "", "## 二、合同基本信息", *contract_info_lines, ""])
+        # 合同主体
+        if sections['甲方'] != '未提取' or sections['乙方'] != '未提取':
+            lines.extend(["---", "", "## 三、合同主体"])
+            if sections['甲方'] != '未提取':
+                lines.append(f"- 甲方：{sections['甲方']}")
+            if sections['乙方'] != '未提取':
+                lines.append(f"- 乙方：{sections['乙方']}")
+            lines.append("")
+        # 合同标的与金额
+        contract_value_lines = []
+        if sections['合同标的'] != '未提取':
+            contract_value_lines.append(f"- 合同标的：{sections['合同标的']}")
+        if sections['合同金额'] != '未提取':
+            contract_value_lines.append(f"- 合同金额：{sections['合同金额']}")
+        if sections['合同期限'] != '未提取':
+            contract_value_lines.append(f"- 合同期限：{sections['合同期限']}")
+        if sections['履约状态'] != '未提取':
+            contract_value_lines.append(f"- 履约状态：{sections['履约状态']}")
+        if contract_value_lines:
+            lines.extend(["---", "", "## 四、合同标的与金额", *contract_value_lines, ""])
     elif payload.get("推荐模板") == "报价清单模板":
         sections = build_price_quote_sections(payload)
         lines.extend([
             "## 一、资料摘要",
             f"- {sections['资料摘要']}",
             "",
-            "## 二、报价基本信息",
-            f"- 报价单名称：{sections['报价单名称']}",
-            f"- 报价主体：{sections['报价主体']}",
-            f"- 报价日期：{sections['报价日期']}",
-            f"- 有效期：{sections['有效期']}",
-            f"- 价格类型：{sections['价格类型']}",
-            "",
-            "## 三、产品型号价格",
-            sections["产品型号价格"],
-            "",
-            "## 四、字段提取结果",
-            f"- 文件标题：{payload.get('文件标题', '')}",
-            f"- 报价单名称：{sections['报价单名称']}",
-            f"- 报价主体：{sections['报价主体']}",
-            f"- 产品型号价格：{sections['产品型号价格']}",
-            f"- 有效期：{sections['有效期']}",
-            f"- 报价日期：{sections['报价日期']}",
-            f"- 价格类型：{sections['价格类型']}",
-            "",
         ])
+        # 报价基本信息
+        quote_info_lines = []
+        if sections['报价单名称'] != '未提取':
+            quote_info_lines.append(f"- 报价单名称：{sections['报价单名称']}")
+        if sections['报价主体'] != '未提取':
+            quote_info_lines.append(f"- 报价主体：{sections['报价主体']}")
+        if sections['报价日期'] != '未提取':
+            quote_info_lines.append(f"- 报价日期：{sections['报价日期']}")
+        if sections['有效期'] != '未提取':
+            quote_info_lines.append(f"- 有效期：{sections['有效期']}")
+        if sections['价格类型'] != '未提取':
+            quote_info_lines.append(f"- 价格类型：{sections['价格类型']}")
+        if quote_info_lines:
+            lines.extend(["---", "", "## 二、报价基本信息", *quote_info_lines, ""])
+        if sections["产品型号价格"] != '未提取':
+            lines.extend(["---", "", "## 三、产品型号价格", sections["产品型号价格"], ""])
     elif payload.get("推荐模板") == "行业知识模板":
         sections = build_industry_knowledge_sections(payload)
         lines.extend([
@@ -1454,61 +1505,24 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             f"- {sections['资料摘要']}",
             "",
         ])
-
         if sections["行业领域"]:
-            lines.extend([
-                "## 二、行业领域",
-                f"- {sections['行业领域']}",
-                "",
-            ])
-
+            lines.extend(["---", "", "## 二、行业领域", f"- {sections['行业领域']}", ""])
         if sections["产业链环节"]:
-            lines.extend([
-                "## 三、产业链环节",
-                f"- {sections['产业链环节']}",
-                "",
-            ])
-
+            lines.extend(["---", "", "## 三、产业链环节", f"- {sections['产业链环节']}", ""])
         if sections["市场规模"]:
-            lines.extend([
-                "## 四、市场规模",
-                f"- {sections['市场规模']}",
-                "",
-            ])
-
+            lines.extend(["---", "", "## 四、市场规模", f"- {sections['市场规模']}", ""])
         if sections["核心玩家"]:
-            lines.extend([
-                "## 五、核心玩家",
-                f"- {sections['核心玩家']}",
-                "",
-            ])
-
+            lines.extend(["---", "", "## 五、核心玩家", f"- {sections['核心玩家']}", ""])
         if sections["发展趋势"]:
-            lines.extend([
-                "## 六、发展趋势",
-                f"- {sections['发展趋势']}",
-                "",
-            ])
-
+            lines.extend(["---", "", "## 六、发展趋势", f"- {sections['发展趋势']}", ""])
+        # 字段提取结果：只输出前面章节未展示的字段
         industry_field_lines: list[str] = []
         if format_industry_knowledge_optional_value(payload.get('文件标题')):
             industry_field_lines.append(f"- 文件标题：{format_industry_knowledge_optional_value(payload.get('文件标题'))}")
-        if sections["行业领域"]:
-            industry_field_lines.append(f"- 行业领域：{sections['行业领域']}")
-        if sections["产业链环节"]:
-            industry_field_lines.append(f"- 产业链环节：{sections['产业链环节']}")
-        if sections["市场规模"]:
-            industry_field_lines.append(f"- 市场规模：{sections['市场规模']}")
-        if sections["核心玩家"]:
-            industry_field_lines.append(f"- 核心玩家：{sections['核心玩家']}")
-        if sections["发展趋势"]:
-            industry_field_lines.append(f"- 发展趋势：{sections['发展趋势']}")
+        # 以下字段已在前面章节展示，跳过避免重复
+        # 行业领域、产业链环节、市场规模、核心玩家、发展趋势
         if industry_field_lines:
-            lines.extend([
-                "## 字段提取结果",
-                *industry_field_lines,
-                "",
-            ])
+            lines.extend(["---", "", "## 七、字段提取结果", *industry_field_lines, ""])
         for heading, content in build_industry_knowledge_deep_sections(payload):
             if content.strip():
                 append_rich_markdown_section(lines, heading, content)
@@ -1523,54 +1537,67 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
         ])
     else:
         sections = build_generic_sections(payload)
-        lines.extend([
-            "## 摘要",
-            f"- 核心摘要：{payload.get('核心摘要', '') or '无'}",
-            f"- 文本预览：{preview_text}",
-            "",
-            "## 资料摘要",
-            f"- {sections['资料摘要']}",
-            "",
-            "## 抽取说明",
-            f"- {sections['抽取说明']}",
-            "",
-            "## 归档建议",
-            f"- {sections['归档建议']}",
-            "",
-        ])
+        # 摘要：只输出有值的字段，避免重复
+        summary_parts = []
+        showed_summary = False
+        if payload.get('核心摘要'):
+            summary_parts.append(f"- 核心摘要：{payload['核心摘要']}")
+            showed_summary = True
+        elif preview_text and preview_text != '无':
+            summary_parts.append(f"- 文本预览：{preview_text}")
+            showed_summary = True
+        if summary_parts:
+            lines.extend(["## 摘要", *summary_parts, ""])
+        # 资料摘要仅在"摘要"章节未展示时输出，避免重复
+        if sections['资料摘要'] and not showed_summary:
+            lines.extend(["---", "", "## 资料摘要", f"- {sections['资料摘要']}", ""])
+        if sections['抽取说明']:
+            lines.extend(["---", "", "## 抽取说明", f"- {sections['抽取说明']}", ""])
+        if sections['归档建议']:
+            lines.extend(["---", "", "## 归档建议", f"- {sections['归档建议']}", ""])
 
     append_full_text_section(lines, payload)
 
     supplemental_lines = build_supplemental_field_lines(payload.get("推荐模板", ""), payload)
     if supplemental_lines:
         lines.extend([
+            "---",
+            "",
             "## 模型补充字段",
             *supplemental_lines,
             "",
         ])
 
-    lines.extend([
-        "## 证据与原始依据",
-        f"- 原始来源：{payload['原始路径']}",
-        f"- 去重主键：{'; '.join(dedup_keys)}",
-        f"- 是否需要拆分：{'是' if payload['是否需要拆分'] else '否'}",
-        f"- 拆分说明：{payload['拆分说明']}",
-        f"- 抽取说明：{payload['抽取说明']}",
-        "",
-        "## 入库与归档判断",
-        f"- 是否适合直接入库：{'是' if payload['是否适合直接入库'] else '否'}",
-        f"- 当前分流：{payload['分流结果']}",
-        f"- 风险说明：{'；'.join(risks)}",
-    ])
+    # 证据与原始依据：只输出有值的字段
+    evidence_lines = []
+    if payload.get('原始路径'):
+        evidence_lines.append(f"- 原始来源：{payload['原始路径']}")
+    if dedup_keys:
+        evidence_lines.append(f"- 去重主键：{'; '.join(dedup_keys)}")
+    if payload.get('是否需要拆分'):
+        evidence_lines.append(f"- 是否需要拆分：是")
+        if payload.get('拆分说明'):
+            evidence_lines.append(f"- 拆分说明：{payload['拆分说明']}")
+    if payload.get('抽取说明'):
+        evidence_lines.append(f"- 抽取说明：{payload['抽取说明']}")
+    if evidence_lines:
+        lines.extend(["---", "", "## 证据与原始依据", *evidence_lines, ""])
+
+    # 入库与归档判断：只输出有值的字段
+    archive_lines = []
+    archive_lines.append(f"- 是否适合直接入库：{'是' if payload.get('是否适合直接入库') else '否'}")
+    if payload.get('分流结果'):
+        archive_lines.append(f"- 当前分流：{payload['分流结果']}")
+    if risks:
+        archive_lines.append(f"- 风险说明：{'；'.join(risks)}")
     if not is_empty_payload_value(payload.get("导入状态")):
-        lines.append(f"- 导入状态：{format_markdown_value(payload.get('导入状态'))}")
+        archive_lines.append(f"- 导入状态：{format_markdown_value(payload.get('导入状态'))}")
     if not is_empty_payload_value(payload.get("导入批次号")):
-        lines.append(f"- 导入批次号：{format_markdown_value(payload.get('导入批次号'))}")
+        archive_lines.append(f"- 导入批次号：{format_markdown_value(payload.get('导入批次号'))}")
     if not is_empty_payload_value(payload.get("目标知识库ID列表")):
-        lines.append(f"- 目标知识库ID列表：{format_markdown_value(payload.get('目标知识库ID列表'))}")
-    lines.extend([
-        "",
-        "## 备注",
-        *[f"- {note}" for note in notes],
-    ])
+        archive_lines.append(f"- 目标知识库ID列表：{format_markdown_value(payload.get('目标知识库ID列表'))}")
+    lines.extend(["---", "", "## 入库与归档判断", *archive_lines, ""])
+
+    if notes:
+        lines.extend(["---", "", "## 备注", *[f"- {note}" for note in notes], ""])
     return "\n".join(lines)

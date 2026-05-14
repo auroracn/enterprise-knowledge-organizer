@@ -228,6 +228,13 @@ def enrich_payload_with_qwen(
     if recommended_template in QWEN_ALLOWED_TEMPLATES and recommended_template:
         updates["推荐模板"] = recommended_template
 
+    # 标准规范/行业标准/国家标准类资料，字段语义与政策官方文件最贴近，
+    # 若 Qwen 选了"方案案例模板"或返回空，统一路由到 政策官方文件模板。
+    _doc_cat = updates.get("文档分类") or ""
+    _is_standard_doc = any(k in _doc_cat for k in ("标准规范", "行业标准", "国家标准", "技术标准"))
+    if _is_standard_doc and updates.get("推荐模板") in {"", "方案案例模板", None}:
+        updates["推荐模板"] = "政策官方文件模板"
+
     raw_fields = response_data.get("字段") or {}
     if isinstance(raw_fields, dict):
         for key in QWEN_FIELD_KEYS:

@@ -1,0 +1,21 @@
+{
+  "ragflow": {
+    "api_url": "http://localhost:9380",
+    "api_key": "YOUR_RAGFLOW_API_KEY",
+    "default_dataset_ids": [],
+    "verify_ssl": false
+  },
+  "qwen": {
+    "api_key": "",
+    "base_url": "",
+    "model": ""
+  },
+  "deepseek": {
+    "api_key": "",
+    "base_url": "",
+    "model": ""
+  },
+  "mineru": {
+    "token": ""
+  }
+}

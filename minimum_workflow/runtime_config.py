@@ -29,6 +29,10 @@ _CONFIG_FIELD_ALIASES: list[tuple[str, str, tuple[str, ...]]] = [
     ("dify", "api_key", ("dify_api_key", "dify api key")),
     ("dify", "default_dataset_ids", ("dify_default_dataset_ids", "dify default dataset ids")),
     ("dify", "verify_ssl", ("dify_verify_ssl", "dify verify ssl")),
+    ("ragflow", "api_url", ("ragflow_api_url", "ragflow api url")),
+    ("ragflow", "api_key", ("ragflow_api_key", "ragflow api key")),
+    ("ragflow", "default_dataset_ids", ("ragflow_default_dataset_ids", "ragflow default dataset ids")),
+    ("ragflow", "verify_ssl", ("ragflow_verify_ssl", "ragflow verify ssl")),
 ]
 
 _ENV_FIELD_ALIASES: dict[tuple[str, str], tuple[str, ...]] = {
@@ -42,6 +46,9 @@ _ENV_FIELD_ALIASES: dict[tuple[str, str], tuple[str, ...]] = {
     ("dify", "api_url"): ("DIFY_API_URL",),
     ("dify", "api_key"): ("DIFY_API_KEY",),
     ("dify", "default_dataset_ids"): ("DIFY_DEFAULT_DATASET_IDS",),
+    ("ragflow", "api_url"): ("RAGFLOW_API_URL",),
+    ("ragflow", "api_key"): ("RAGFLOW_API_KEY",),
+    ("ragflow", "default_dataset_ids"): ("RAGFLOW_DEFAULT_DATASET_IDS",),
 }
 
 

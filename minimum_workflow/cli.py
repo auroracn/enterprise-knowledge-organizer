@@ -21,6 +21,14 @@ from minimum_workflow.parameter_letter_module import (
 from minimum_workflow.directory_extractors import classify_image_directory
 from minimum_workflow.extractors import should_skip_image_file
 from minimum_workflow.pipeline import detect_file_type, run_pipeline
+from minimum_workflow.ragflow_import_service import (
+    RagflowApiError,
+    RagflowClient,
+    RagflowRuntime,
+    batch_upload_to_ragflow,
+    resolve_ragflow_runtime,
+    upload_markdown_to_ragflow,
+)
 from minimum_workflow.runtime_config import get_runtime_setting, load_runtime_settings, resolve_llm_runtime
 
 
@@ -104,6 +112,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="重跑模式：仅处理上轮 scan_report.json 中 status=failed 的源文件；"
              "大文件拆分链路复用 chunk cache 跳过已完成分片。",
     )
+    parser.add_argument(
+        "--upload-to-ragflow",
+        action="store_true",
+        help="处理完成后自动上传生成的 Markdown 到 RAGFlow 知识库。",
+    )
+    parser.add_argument(
+        "--ragflow-api-url",
+        help="RAGFlow API 地址；未传时尝试读取配置文件或环境变量 RAGFLOW_API_URL。",
+    )
+    parser.add_argument(
+        "--ragflow-api-key",
+        help="RAGFlow API Key；未传时尝试读取配置文件或环境变量 RAGFLOW_API_KEY。",
+    )
+    parser.add_argument(
+        "--ragflow-dataset-id",
+        help="指定 RAGFlow 目标知识库 ID；未传时使用配置文件中的默认知识库。",
+    )
     return parser
 
 
@@ -153,6 +178,73 @@ def resolve_qwen_runtime(
         "api_key": runtime.api_key,
         "base_url": runtime.base_url,
         "model": runtime.model,
+    }
+
+
+def resolve_ragflow_config(
+    *,
+    cli_api_url: str | None = None,
+    cli_api_key: str | None = None,
+    cli_dataset_id: str | None = None,
+) -> dict[str, str] | None:
+    """解析 RAGFlow 配置，返回配置字典或 None。"""
+    settings = load_runtime_settings()
+    runtime = resolve_ragflow_runtime(
+        api_url=cli_api_url or "",
+        api_key=cli_api_key or "",
+        default_dataset_ids=cli_dataset_id or "",
+    )
+    if not runtime:
+        return None
+    result = {
+        "api_url": runtime.api_url,
+        "api_key": runtime.api_key,
+        "verify_ssl": str(runtime.verify_ssl),
+    }
+    if cli_dataset_id:
+        result["dataset_id"] = cli_dataset_id
+    elif runtime.default_dataset_ids:
+        result["dataset_id"] = runtime.default_dataset_ids[0]
+    return result
+
+
+def upload_to_ragflow(
+    markdown_files: list[Path],
+    ragflow_config: dict[str, str],
+) -> dict[str, Any]:
+    """上传 Markdown 文件到 RAGFlow 知识库。"""
+    dataset_id = ragflow_config.get("dataset_id")
+    if not dataset_id:
+        return {"status": "error", "error": "未指定 RAGFlow 知识库 ID"}
+
+    runtime = RagflowRuntime(
+        api_url=ragflow_config["api_url"],
+        api_key=ragflow_config["api_key"],
+        default_dataset_ids=[dataset_id],
+        verify_ssl=ragflow_config.get("verify_ssl", "true").lower() in {"true", "1", "yes"},
+    )
+    client = RagflowClient(runtime)
+
+    def progress_callback(payload: dict[str, Any]) -> None:
+        print(f"[RAGFlow] {payload.get('message', '')}", flush=True)
+
+    results = batch_upload_to_ragflow(
+        client,
+        dataset_id,
+        markdown_files,
+        progress_callback=progress_callback,
+    )
+
+    success_count = sum(1 for r in results if r["status"] == "success")
+    failed_count = sum(1 for r in results if r["status"] == "failed")
+
+    return {
+        "status": "completed",
+        "dataset_id": dataset_id,
+        "total": len(markdown_files),
+        "success": success_count,
+        "failed": failed_count,
+        "results": results,
     }
 
 
@@ -594,6 +686,7 @@ def run_source_dir(
     enable_qwen: bool,
     qwen_runtime: dict[str, str],
     resume: bool = False,
+    ragflow_config: dict[str, str] | None = None,
 ) -> int:
     contract = load_contract()
     qwen_banner = "启用" if enable_qwen and qwen_runtime else ("勾选但凭据不全，跳过" if enable_qwen else "未启用")
@@ -783,6 +876,28 @@ def run_source_dir(
     if csv_path:
         print(f"失败重试清单: {csv_path}")
     print(f"目录扫描完成: {source_dir} -> {report_path}")
+
+    # RAGFlow 上传：处理完成后将成功的 Markdown 文件上传到 RAGFlow 知识库
+    if ragflow_config and success_count > 0:
+        print(f"\n[RAGFlow] 开始上传 {success_count} 个 Markdown 文件到 RAGFlow...", flush=True)
+        successful_markdown_files = []
+        for item in report_items:
+            if item.get("status") == "success" and item.get("structured_markdown_path"):
+                md_path = Path(item["structured_markdown_path"])
+                if md_path.exists():
+                    successful_markdown_files.append(md_path)
+
+        if successful_markdown_files:
+            try:
+                ragflow_result = upload_to_ragflow(successful_markdown_files, ragflow_config)
+                print(f"[RAGFlow] 上传完成: 成功 {ragflow_result['success']}/{ragflow_result['total']}", flush=True)
+                if ragflow_result.get("failed", 0) > 0:
+                    print(f"[RAGFlow] 警告: {ragflow_result['failed']} 个文件上传失败", flush=True)
+            except Exception as exc:
+                print(f"[RAGFlow] 上传过程出错: {exc}", flush=True)
+        else:
+            print("[RAGFlow] 没有找到需要上传的 Markdown 文件", flush=True)
+
     return 0 if failed_count == 0 else 1
 
 
@@ -796,6 +911,11 @@ def main() -> int:
         cli_base_url=args.qwen_base_url,
         cli_model=args.qwen_model,
     )
+    ragflow_config = resolve_ragflow_config(
+        cli_api_url=args.ragflow_api_url,
+        cli_api_key=args.ragflow_api_key,
+        cli_dataset_id=args.ragflow_dataset_id,
+    )
 
     if (args.output_dir or args.internal_output_dir) and not args.source_dir:
         parser.error("--output-dir 和 --internal-output-dir 仅可与 --source-dir 一起使用。")
@@ -805,6 +925,8 @@ def main() -> int:
         parser.error("启用 --enable-ocr 时，必须通过 --mineru-token 或环境变量 MINERU_TOKEN 提供 token。")
     if args.enable_qwen and not qwen_runtime:
         parser.error("启用 --enable-qwen 时，必须在配置文件.txt或命令行中提供 Qwen 的 api key、base url、model。")
+    if args.upload_to_ragflow and not ragflow_config:
+        parser.error("启用 --upload-to-ragflow 时，必须通过命令行或配置文件提供 RAGFlow 的 api url 和 api key。")
 
     if args.list:
         return list_samples()
@@ -845,6 +967,8 @@ def main() -> int:
         }
         if internal_output_dir is not None:
             run_source_kwargs["internal_output_dir"] = internal_output_dir
+        if args.upload_to_ragflow and ragflow_config:
+            run_source_kwargs["ragflow_config"] = ragflow_config
         return run_source_dir(source_dir, **run_source_kwargs)
 
     parser.print_help()

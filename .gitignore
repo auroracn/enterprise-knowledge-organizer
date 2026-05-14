@@ -20,6 +20,11 @@ _rename_integration_docs.py
 配置文件.示例.json
 config/first_batch_samples.json
 
+# 临时脚本与日志
+tmp_*
+test_random/
+Claude输出_random/
+
 # 内部文档与一次性素材脚本（不入公开仓库）
 minimum_workflow/build_shudao_low_altitude_pack.py
 交接_下一轮.md

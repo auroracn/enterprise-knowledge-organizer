@@ -38,6 +38,14 @@ from minimum_workflow.dify_import_service import (
     save_manual_review,
     write_batch_state,
 )
+from minimum_workflow.ragflow_import_service import (
+    RagflowClient,
+    RagflowRuntime,
+    batch_upload_to_ragflow,
+    resolve_ragflow_runtime,
+    upload_markdown_to_ragflow,
+)
+from minimum_workflow.cli import upload_to_ragflow
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = str(PROJECT_ROOT / "Claude输出")
@@ -77,6 +85,10 @@ _CONFIG_FIELD_MAP: list[tuple[str, str, tuple[str, ...]]] = [
     ("dify", "api_key", ("dify_api_key", "dify api key")),
     ("dify", "default_dataset_ids", ("dify_default_dataset_ids", "dify default dataset ids")),
     ("dify", "verify_ssl", ("dify_verify_ssl", "dify verify ssl")),
+    ("ragflow", "api_url", ("ragflow_api_url", "ragflow api url")),
+    ("ragflow", "api_key", ("ragflow_api_key", "ragflow api key")),
+    ("ragflow", "default_dataset_ids", ("ragflow_default_dataset_ids", "ragflow default dataset ids")),
+    ("ragflow", "verify_ssl", ("ragflow_verify_ssl", "ragflow verify ssl")),
 ]
 
 
@@ -97,6 +109,7 @@ def _nest_config(flat_input: dict[str, str], base: dict | None = None) -> dict:
         "deepseek": dict((base or {}).get("deepseek", {})),
         "mineru": dict((base or {}).get("mineru", {})),
         "dify": dict((base or {}).get("dify", {})),
+        "ragflow": dict((base or {}).get("ragflow", {})),
     }
     lower_flat = {k.lower(): v for k, v in flat_input.items()}
     for section, field, aliases in _CONFIG_FIELD_MAP:
@@ -1535,6 +1548,11 @@ def run_scan(
     dify_api_key: str = "",
     dify_default_dataset_ids: str = "",
     dify_verify_ssl: bool = False,
+    ragflow_api_url: str = "",
+    ragflow_api_key: str = "",
+    ragflow_default_dataset_ids: str = "",
+    ragflow_verify_ssl: bool = False,
+    enable_ragflow: bool = False,
     save_cfg: bool = False,
 ):
     profile = _resolve_profile(profile)
@@ -1555,6 +1573,13 @@ def run_scan(
         if dify_default_dataset_ids.strip():
             to_save["dify_default_dataset_ids"] = dify_default_dataset_ids.strip()
         to_save["dify_verify_ssl"] = "true" if dify_verify_ssl else "false"
+        if ragflow_api_url.strip():
+            to_save["ragflow_api_url"] = ragflow_api_url.strip()
+        if ragflow_api_key.strip():
+            to_save["ragflow_api_key"] = ragflow_api_key.strip()
+        if ragflow_default_dataset_ids.strip():
+            to_save["ragflow_default_dataset_ids"] = ragflow_default_dataset_ids.strip()
+        to_save["ragflow_verify_ssl"] = "true" if ragflow_verify_ssl else "false"
         if to_save:
             _save_config(to_save, profile=profile)
 
@@ -1785,7 +1810,49 @@ def run_scan(
         )
         shutil.rmtree(batch_dir, ignore_errors=True)
         yield buf + f"\n❌ 处理退出码 {rc}，打包终止。请检查上方日志错误信息。", gr.update(value=None, interactive=False)
+        return
 
+    # RAGFlow 上传：处理完成后将成功的 Markdown 文件上传到 RAGFlow 知识库
+    if enable_ragflow and ragflow_api_url.strip() and ragflow_api_key.strip():
+        yield buf + "\n\n📤 正在上传到 RAGFlow...", None
+        try:
+            # 收集成功的 Markdown 文件
+            scan_report_path = structured_out_dir / "scan_report.json"
+            successful_markdown_files = []
+            if scan_report_path.exists():
+                report_data = json.loads(scan_report_path.read_text(encoding="utf-8"))
+                for item in report_data.get("items", []):
+                    if item.get("status") == "success" and item.get("structured_markdown_path"):
+                        md_path = Path(item["structured_markdown_path"])
+                        if md_path.exists():
+                            successful_markdown_files.append(md_path)
+
+            if successful_markdown_files:
+                # 构建 RAGFlow 配置
+                ragflow_config = {
+                    "api_url": ragflow_api_url.strip(),
+                    "api_key": ragflow_api_key.strip(),
+                    "verify_ssl": str(ragflow_verify_ssl),
+                }
+                if ragflow_default_dataset_ids.strip():
+                    ragflow_config["dataset_id"] = ragflow_default_dataset_ids.strip()
+
+                # 上传到 RAGFlow
+                ragflow_result = upload_to_ragflow(successful_markdown_files, ragflow_config)
+                success_count = ragflow_result.get("success", 0)
+                failed_count = ragflow_result.get("failed", 0)
+                buf += f"\n✅ RAGFlow 上传完成：成功 {success_count}/{len(successful_markdown_files)}"
+                if failed_count > 0:
+                    buf += f"，失败 {failed_count} 个"
+                yield buf, gr.update(value=archive_full_path, interactive=True)
+            else:
+                buf += "\n⚠️ 没有找到需要上传的 Markdown 文件"
+                yield buf, gr.update(value=archive_full_path, interactive=True)
+        except Exception as exc:
+            buf += f"\n❌ RAGFlow 上传失败：{exc}"
+            yield buf, gr.update(value=archive_full_path, interactive=True)
+    else:
+        yield buf + "\n✅ 处理完成！结果已成功打包，并已写入持久批次目录。\n", gr.update(value=archive_full_path, interactive=True)
 
 
 # (移除了本地驱动打开函数，改为 ZIP 下载方式)
@@ -1799,11 +1866,12 @@ def build_ui() -> gr.Blocks:
     js_light_mode = """() => {
         document.body.classList.remove('dark');
         const tooltips = {
-            'run-btn': '启动自动化处理：按规则 / MinerU /（可选）Qwen 对输入资料分类、抽取、生成终稿 Markdown 并打包 ZIP 下载。',
+            'run-btn': '启动自动化处理：按规则 / MinerU /（可选）Qwen 对输入资料分类、抽取、生成终稿 Markdown 并打包 ZIP 下载。可选启用 RAGFlow 上传。',
             'save-review-btn': '把当前选中的待审核样本的分类与目标知识库写入批次的审核文件（sidecar），供后续合并使用。',
             'merge-review-btn': '把所有已审核样本的分类结果合并回终稿 Markdown，生成可直接入库的 merged 文件；一键导入前必须执行。',
             'import-btn': '把已就绪（审核完成且指定了知识库）的样本推送到选定的 Dify 知识库，会自动处理分类标签绑定与元数据。',
             'refresh-import-btn': '重新读取本地批次状态，并从 Dify 拉取最新知识库列表。',
+            'ragflow-upload-btn': '把当前批次中已成功生成的 Markdown 文件上传到 RAGFlow 知识库。',
             'refresh-storage-btn': '重新扫描 ui_batches 目录，统计批次数、文件数、总占用空间。',
             'cleanup-btn': '【危险操作】永久删除 ui_batches 下所有批次，包括上传的原始文件、生成的 Markdown、批次状态文件，不可恢复。'
         };
@@ -1827,7 +1895,7 @@ def build_ui() -> gr.Blocks:
                     <div id="g-logo">📂</div>
                     <div>
                         <div id="g-title">长风知识整理助手</div>
-                        <div id="g-subtitle">资料目录 → 结构化 Markdown → 可直接入 Dify 知识库</div>
+                        <div id="g-subtitle">资料目录 → 结构化 Markdown → 可直接入 Dify/RAGFlow 知识库</div>
                     </div>
                 </div>
                 """)
@@ -1894,6 +1962,31 @@ def build_ui() -> gr.Blocks:
                         enable_ocr = gr.Checkbox(label="启用 OCR（图片/扫描件目录）", value=False)
                         enable_qwen = gr.Checkbox(label="启用 Qwen 字段补强", value=False)
                         save_cfg = gr.Checkbox(label="保存配置到本地", value=True)
+                    with gr.Row():
+                        ragflow_api_url = gr.Textbox(
+                            label="RAGFlow API URL",
+                            value=cfg.get("ragflow_api_url", ""),
+                            lines=1,
+                        )
+                        ragflow_api_key = gr.Textbox(
+                            label="RAGFlow API Key",
+                            value=cfg.get("ragflow_api_key", ""),
+                            type="password",
+                            lines=1,
+                        )
+                        ragflow_default_dataset_ids = gr.Textbox(
+                            label="RAGFlow 默认知识库 ID（可选）",
+                            info="留空则不预设；可在导入时手动指定",
+                            value=cfg.get("ragflow_default_dataset_ids", ""),
+                            lines=1,
+                        )
+                    with gr.Row():
+                        ragflow_verify_ssl = gr.Checkbox(
+                            label="校验 RAGFlow HTTPS 证书",
+                            value=(cfg.get("ragflow_verify_ssl", "false").strip().lower() not in {"0", "false", "no", "off"}),
+                            info="内网自签名证书场景可关闭；公网和正式证书场景应保持开启。",
+                        )
+                        enable_ragflow = gr.Checkbox(label="启用 RAGFlow 上传", value=False)
 
         # 主区域：四列 —— 输入 | 日志+进度 | Dify 控制 | Dify 状态
         with gr.Row():
@@ -1990,6 +2083,19 @@ def build_ui() -> gr.Blocks:
                 batch_summary = gr.Textbox(label="批次概览", lines=4, interactive=False)
                 pending_detail = gr.Textbox(label="当前待审核样本", lines=3, interactive=False)
                 ready_summary = gr.Textbox(label="可直接导入", lines=6, interactive=False)
+
+            # 第 5 列：RAGFlow 导入控制
+            with gr.Column(scale=8, min_width=320):
+                gr.HTML('<div class="g-section">RAGFlow 导入</div>')
+                ragflow_dataset_id = gr.Textbox(
+                    label="RAGFlow 知识库 ID",
+                    info="留空则使用配置文件中的默认知识库",
+                    value=cfg.get("ragflow_default_dataset_ids", ""),
+                    lines=1,
+                )
+                ragflow_upload_btn = gr.Button("⬆️ 上传到 RAGFlow", variant="primary", elem_id="ragflow-upload-btn")
+                ragflow_status = gr.Textbox(label="RAGFlow 状态", lines=2, interactive=False)
+                ragflow_progress_html = gr.HTML(_render_progress(0, "等待开始"))
                 pending_summary = gr.Textbox(label="待审核", lines=6, interactive=False)
                 history_summary = gr.Textbox(label="已导入 / 失败", lines=6, interactive=False)
 
@@ -2037,6 +2143,7 @@ def build_ui() -> gr.Blocks:
                     enable_ocr, enable_qwen,
                     mineru_token, qwen_api_key, qwen_base_url, qwen_model,
                     dify_api_url, dify_api_key, dify_default_dataset_ids, dify_verify_ssl,
+                    ragflow_api_url, ragflow_api_key, ragflow_default_dataset_ids, ragflow_verify_ssl, enable_ragflow,
                     save_cfg],
             outputs=[log_out, result_file, progress_html],
         )
@@ -2120,6 +2227,10 @@ def build_ui() -> gr.Blocks:
             dify_key_val = cfg2.get("dify_api_key", "")
             dify_ids_val = cfg2.get("dify_default_dataset_ids", "")
             dify_verify_ssl_val = cfg2.get("dify_verify_ssl", "false").strip().lower() not in {"0", "false", "no", "off"}
+            ragflow_url_val = cfg2.get("ragflow_api_url", "")
+            ragflow_key_val = cfg2.get("ragflow_api_key", "")
+            ragflow_ids_val = cfg2.get("ragflow_default_dataset_ids", "")
+            ragflow_verify_ssl_val = cfg2.get("ragflow_verify_ssl", "false").strip().lower() not in {"0", "false", "no", "off"}
             dashboard = _render_dashboard(
                 "", dify_url_val, dify_key_val, dify_ids_val, dify_verify_ssl_val,
                 status_message=f"已切换到 Profile：{PROFILE_LABELS.get(new_profile, new_profile)}",
@@ -2129,6 +2240,7 @@ def build_ui() -> gr.Blocks:
             return (
                 mineru_val, qwen_key_val, qwen_url_val, qwen_model_val,
                 dify_url_val, dify_key_val, dify_ids_val, gr.update(value=dify_verify_ssl_val),
+                ragflow_url_val, ragflow_key_val, ragflow_ids_val, gr.update(value=ragflow_verify_ssl_val),
                 *dashboard,
                 summary, details, gr.update(value=False),
                 f"已切换到 {PROFILE_LABELS.get(new_profile, new_profile)}",
@@ -2140,9 +2252,96 @@ def build_ui() -> gr.Blocks:
             outputs=[
                 mineru_token, qwen_api_key, qwen_base_url, qwen_model,
                 dify_api_url, dify_api_key, dify_default_dataset_ids, dify_verify_ssl,
+                ragflow_api_url, ragflow_api_key, ragflow_default_dataset_ids, ragflow_verify_ssl,
                 *refresh_outputs,
                 storage_summary_md, storage_details_md, confirm_cleanup, cleanup_status,
             ],
+        )
+
+        # RAGFlow 上传按钮事件
+        def ragflow_upload_with_progress(
+            batch_dir,
+            ragflow_api_url,
+            ragflow_api_key,
+            ragflow_dataset_id,
+            ragflow_verify_ssl,
+            profile,
+        ):
+            profile = _resolve_profile(profile)
+            if not batch_dir:
+                yield _render_progress(0, "请先选择批次"), "请先选择批次"
+                return
+            if not ragflow_api_url.strip() or not ragflow_api_key.strip():
+                yield _render_progress(0, "请填写 RAGFlow API URL 和 API Key"), "请填写 RAGFlow API URL 和 API Key"
+                return
+
+            yield _render_progress(5, "正在准备上传到 RAGFlow..."), "正在准备上传..."
+
+            try:
+                # 构建 RAGFlow 配置
+                ragflow_config = {
+                    "api_url": ragflow_api_url.strip(),
+                    "api_key": ragflow_api_key.strip(),
+                    "verify_ssl": str(ragflow_verify_ssl),
+                }
+                if ragflow_dataset_id.strip():
+                    ragflow_config["dataset_id"] = ragflow_dataset_id.strip()
+
+                # 收集成功的 Markdown 文件
+                state = load_batch_state(batch_dir)
+                structured_output_dir = Path(str(state.get("structured_output_dir") or ""))
+                scan_report_path = structured_output_dir / "scan_report.json"
+
+                successful_markdown_files = []
+                if scan_report_path.exists():
+                    report_data = json.loads(scan_report_path.read_text(encoding="utf-8"))
+                    for item in report_data.get("items", []):
+                        if item.get("status") == "success" and item.get("structured_markdown_path"):
+                            md_path = Path(item["structured_markdown_path"])
+                            if md_path.exists():
+                                successful_markdown_files.append(md_path)
+
+                if not successful_markdown_files:
+                    yield _render_progress(0, "没有找到需要上传的 Markdown 文件"), "没有找到需要上传的 Markdown 文件"
+                    return
+
+                total = len(successful_markdown_files)
+                yield _render_progress(10, f"准备上传 {total} 个文件..."), f"准备上传 {total} 个文件..."
+
+                # 上传到 RAGFlow
+                def progress_callback(payload):
+                    msg = payload.get("message", "")
+                    total = payload.get("total", 0)
+                    done = payload.get("done", 0)
+                    pct = max(10, min(95, int(10 + 85 * done / max(total, 1))))
+                    return pct, msg
+
+                results = batch_upload_to_ragflow(
+                    RagflowClient(RagflowRuntime(
+                        api_url=ragflow_config["api_url"],
+                        api_key=ragflow_config["api_key"],
+                        default_dataset_ids=[ragflow_config.get("dataset_id", "")],
+                        verify_ssl=ragflow_config.get("verify_ssl", "true").lower() in {"true", "1", "yes"},
+                    )),
+                    ragflow_config.get("dataset_id", ""),
+                    successful_markdown_files,
+                )
+
+                success_count = sum(1 for r in results if r["status"] == "success")
+                failed_count = sum(1 for r in results if r["status"] == "failed")
+
+                if failed_count == 0:
+                    yield _render_progress(100, f"上传完成：成功 {success_count}/{total}"), f"✅ RAGFlow 上传完成：成功 {success_count}/{total}"
+                else:
+                    yield _render_progress(100, f"上传完成：成功 {success_count}/{total}，失败 {failed_count}"), f"⚠️ RAGFlow 上传完成：成功 {success_count}/{total}，失败 {failed_count}"
+
+            except Exception as exc:
+                yield _render_progress(0, f"上传失败：{exc}"), f"❌ RAGFlow 上传失败：{exc}"
+
+        ragflow_upload_btn.click(
+            ragflow_upload_with_progress,
+            inputs=[batch_selector, ragflow_api_url, ragflow_api_key, ragflow_dataset_id, ragflow_verify_ssl, profile_selector],
+            outputs=[ragflow_progress_html, ragflow_status],
         )
 
         demo.load(

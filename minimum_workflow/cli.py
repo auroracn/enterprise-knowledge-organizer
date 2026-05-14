@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -400,6 +401,75 @@ def select_preferred_scan_sources(source_dir: Path, scan_sources: list[Path]) ->
     )
 
 
+def _compute_file_hash(file_path: Path, chunk_size: int = 8192) -> str:
+    """计算文件 MD5 哈希，大文件分块读取。"""
+    md5 = hashlib.md5()
+    with file_path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            md5.update(chunk)
+    return md5.hexdigest()
+
+
+def deduplicate_by_content(
+    source_dir: Path,
+    scan_sources: list[Path],
+    skipped_duplicate_items: list[dict[str, str]],
+) -> tuple[list[Path], list[dict[str, str]]]:
+    """跨目录内容去重：相同内容（MD5）的文件只保留一个。"""
+    hash_groups: dict[str, list[Path]] = {}
+    for source_path in scan_sources:
+        try:
+            file_hash = _compute_file_hash(source_path)
+        except OSError:
+            continue
+        hash_groups.setdefault(file_hash, []).append(source_path)
+
+    selected_sources: list[Path] = []
+    new_skipped: list[dict[str, str]] = []
+    for file_hash, grouped_paths in hash_groups.items():
+        if len(grouped_paths) == 1:
+            selected_sources.extend(grouped_paths)
+            continue
+
+        preferred_source = min(
+            grouped_paths,
+            key=lambda path: (
+                SCAN_SOURCE_SUFFIX_PRIORITY.get(path.suffix.lower(), 100),
+                len(str(path)),
+                str(path).lower(),
+            ),
+        )
+        selected_sources.append(preferred_source)
+        for skipped_source in grouped_paths:
+            if skipped_source == preferred_source:
+                continue
+            try:
+                rel_skipped = str(skipped_source.relative_to(source_dir))
+            except ValueError:
+                rel_skipped = str(skipped_source)
+            try:
+                rel_preferred = str(preferred_source.relative_to(source_dir))
+            except ValueError:
+                rel_preferred = str(preferred_source)
+            new_skipped.append(
+                {
+                    "status": "skipped_content_duplicate",
+                    "source_path": str(skipped_source),
+                    "preferred_source_path": str(preferred_source),
+                    "reason": f"跨目录内容重复（MD5={file_hash[:12]}…），与 {rel_preferred} 内容相同，保留后者。",
+                }
+            )
+
+    all_skipped = sorted(
+        skipped_duplicate_items + new_skipped,
+        key=lambda item: (item["preferred_source_path"], item["source_path"]),
+    )
+    return sorted(selected_sources, key=lambda item: str(item)), all_skipped
+
+
 SKIP_ADMIN_KEYWORDS = (
     "劳动合同",
     "_保单_",
@@ -730,6 +800,11 @@ def run_source_dir(
     skipped_non_source_items = [item for item in all_skipped_items if item.get("status") == "skipped_non_source"]
     selected_scan_sources, skipped_duplicate_items = select_preferred_scan_sources(source_dir, scan_sources)
 
+    # 跨目录内容去重：相同内容（MD5）的文件只保留一个
+    selected_scan_sources, skipped_duplicate_items = deduplicate_by_content(
+        source_dir, selected_scan_sources, skipped_duplicate_items
+    )
+
     # resume：去重后按上轮失败 source_path 过滤
     if resume:
         selected_scan_sources = [p for p in selected_scan_sources if str(p) in previously_failed]
@@ -760,7 +835,8 @@ def run_source_dir(
     cleanup_review_outputs(review_output_root, source_dir, report_items, duplicate_relative_stems)
     success_count = 0
     failed_count = 0
-    skipped_duplicate_count = len(skipped_duplicate_items)
+    skipped_duplicate_count = len([i for i in skipped_duplicate_items if i.get("status") == "skipped_duplicate"])
+    skipped_content_duplicate_count = len([i for i in skipped_duplicate_items if i.get("status") == "skipped_content_duplicate"])
     skipped_photo_count = len(skipped_photo_items)
     skipped_non_source_count = len(skipped_non_source_items)
     for source_path in selected_scan_sources:
@@ -865,6 +941,7 @@ def run_source_dir(
         "success_count": success_count,
         "failed_count": failed_count,
         "skipped_duplicate_count": skipped_duplicate_count,
+        "skipped_content_duplicate_count": skipped_content_duplicate_count,
         "skipped_photo_count": skipped_photo_count,
         "skipped_non_source_count": skipped_non_source_count,
         "items": report_items,
@@ -875,6 +952,8 @@ def run_source_dir(
     csv_path = write_failed_to_retry_csv(internal_output_root, failed_items)
     if csv_path:
         print(f"失败重试清单: {csv_path}")
+    if skipped_content_duplicate_count > 0:
+        print(f"跨目录内容去重: 跳过 {skipped_content_duplicate_count} 个重复文件")
     print(f"目录扫描完成: {source_dir} -> {report_path}")
 
     # RAGFlow 上传：处理完成后将成功的 Markdown 文件上传到 RAGFlow 知识库

@@ -2122,31 +2122,43 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
             return name_idx, price_idx
         return None
 
-    # 优先：按表头定位列，逐行取"名称列 + 价格列"
+    # 优先：按表头定位列，逐行取"名称列 + 价格列"。
+    # 多工作表/多表场景：每个工作表（# 工作表：xxx）都有自己的表头，必须逐个表头段处理，
+    # 不能只认首个表头后 break（否则只抽到第一个工作表，其余产品全部丢失）。
     lines = [ln for ln in text.split("\n") if ln.count("|") >= 2]
     used_header_columns = False
-    for idx, line in enumerate(lines):
-        cells = _split_row(line)
-        cols = _locate_columns(cells)
+    header_positions = [i for i, ln in enumerate(lines) if _locate_columns(_split_row(ln))]
+    for seg_idx, idx in enumerate(header_positions):
+        cols = _locate_columns(_split_row(lines[idx]))
         if not cols:
             continue
         name_idx, price_idx = cols
         used_header_columns = True
-        # 该表头行之后的数据行按列取值
-        for data_line in lines[idx + 1:]:
+        # 该表头行之后、到下一个表头之前的数据行按列取值
+        end = header_positions[seg_idx + 1] if seg_idx + 1 < len(header_positions) else len(lines)
+        for data_line in lines[idx + 1:end]:
             dcells = _split_row(data_line)
             # 分隔行（--- | --- ）跳过
             if all(re.fullmatch(r"[-:\s]*", c) for c in dcells):
                 continue
+            # 数据行可能本身是下一个表的表头，跳过（由下一段处理）
+            if _locate_columns(dcells):
+                continue
             if name_idx >= len(dcells) or price_idx >= len(dcells):
                 continue
             name = dcells[name_idx]
-            price_cell = dcells[price_idx]
-            price_match = re.search(r"(\d[\d,.]*)", price_cell)
+            price_cell = dcells[price_idx].strip()
+            # 合并标题行/跨列占位（如 FC200 表首 "DJI FlyCart 200" 占满所有列）会让
+            # 名称列与价格列内容相同，且价格列不是纯数字——这类不是真实报价行，跳过，
+            # 否则会从名称里的数字误抠出价格（FlyCart 200 → 200 元）。
+            if name == price_cell:
+                continue
+            # 真实价格单元格本质是一个数字（可带千分位/小数/元·万元后缀），
+            # 不能是夹带数字的文字串。用 fullmatch 而非 search，挡掉名称污染。
+            price_match = re.fullmatch(r"(\d[\d,]*(?:\.\d+)?)\s*(?:元|万元|万)?", price_cell)
             if not price_match:
                 continue
             _add_item(name, price_match.group(1))
-        break  # 仅使用首个有效报价表头
 
     # 回退：无可用表头时，沿用旧的盲取启发式
     if not used_header_columns:
@@ -2166,7 +2178,8 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
         for model, price in re.findall(pattern, text):
             _add_item(model, price)
 
-    return items[:10]
+    # 不做静默截断：报价清单应完整列出所有产品（此前 [:10] 会悄悄丢掉绝大多数产品行）。
+    return items
 
 
 def infer_price_quote_validity(text: str) -> str:

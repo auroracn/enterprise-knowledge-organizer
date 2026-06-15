@@ -668,19 +668,47 @@ def build_contract_sections(payload: dict[str, Any]) -> dict[str, str]:
 def build_price_quote_sections(payload: dict[str, Any]) -> dict[str, str]:
     items = payload.get("产品型号价格字段") or []
     items_text = "未提取"
+    price_values: list[float] = []
     if isinstance(items, list) and items:
         parts = []
         for item in items:
             if isinstance(item, dict):
                 parts.append("；".join(f"{k}：{v}" for k, v in item.items() if v))
+                price_raw = str(item.get("价格", ""))
+                price_match = re.search(r"(\d[\d,]*(?:\.\d+)?)", price_raw.replace(",", ""))
+                if price_match:
+                    try:
+                        price_values.append(float(price_match.group(1)))
+                    except ValueError:
+                        pass
             else:
                 parts.append(str(item))
         items_text = "\n".join(parts) if parts else "未提取"
     # 清理报价主体字段的特殊字符
     raw_subject = payload.get("报价主体字段", "") or ""
     cleaned_subject = re.sub(r"^[|｜\s]+", "", raw_subject).strip()
+
+    # 资料摘要：报价清单类资料用结构化事实摘要（产品数 + 价格区间），
+    # 而非把首行表格原样塞进来再截断（旧逻辑会在字符中间截断成乱码尾巴，对检索无意义）。
+    item_count = len(items) if isinstance(items, list) else 0
+    if item_count:
+        summary_bits = [f"本报价清单共含 {item_count} 项产品/服务报价"]
+        if price_values:
+            low, high = min(price_values), max(price_values)
+            fmt = lambda v: f"{int(v):,}" if v.is_integer() else f"{v:,.2f}"
+            if low == high:
+                summary_bits.append(f"报价 {fmt(low)} 元")
+            else:
+                summary_bits.append(f"报价区间 {fmt(low)}–{fmt(high)} 元")
+        sheet_name = payload.get("报价单名称字段") or payload.get("标题") or ""
+        if sheet_name:
+            summary_bits.insert(0, str(sheet_name))
+        summary = "；".join(summary_bits) + "。完整型号与价格见下方清单，详细参数见原文全文。"
+    else:
+        summary = clean_summary_field(payload.get("文本预览", "") or "") or "当前尚未提取到可用正文。"
+
     return {
-        "资料摘要": clean_summary_field(payload.get("文本预览", "") or "") or "当前尚未提取到可用正文。",
+        "资料摘要": summary,
         "报价单名称": payload.get("报价单名称字段", "") or "",
         "报价主体": cleaned_subject or "",
         "产品型号价格": items_text,

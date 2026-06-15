@@ -37,7 +37,7 @@ from minimum_workflow.field_extractors import (
     extract_price_quote_items,
     normalize_policy_date,
 )
-from minimum_workflow.markdown_templates import clean_summary_field
+from minimum_workflow.markdown_templates import clean_summary_field, build_price_quote_sections
 from minimum_workflow.qwen_client import enrich_payload_with_qwen, normalize_solution_summary_payload
 from minimum_workflow.pipeline import (
     DIRECTORY_TYPE,
@@ -3424,6 +3424,76 @@ class MinimumWorkflowTest(unittest.TestCase):
         self.assertNotIn("合计", models)
         # 不得把表头文字"设备说明"当成型号
         self.assertNotIn("设备说明", models)
+
+    def test_price_quote_items_span_multiple_worksheets(self) -> None:
+        # 多工作表报价表：每个工作表都有自己的表头，必须全部抽取，不能只认第一个表
+        text = (
+            "# 工作表：表A\n"
+            "| 序号 | 产品型号 | 数量 | 单价 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 1 | 甲产品 | 1 | 1000 |\n"
+            "| 2 | 乙产品 | 1 | 2000 |\n"
+            "\n"
+            "# 工作表：表B\n"
+            "| 序号 | 产品型号 | 数量 | 单价 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 1 | 丙产品 | 1 | 3000 |\n"
+            "| 2 | 丁产品 | 1 | 4000 |\n"
+        )
+        items = extract_price_quote_items(text)
+        models = [it["型号"] for it in items]
+        # 第二个工作表的产品也必须在（旧逻辑 break 后只剩甲/乙）
+        self.assertIn("丙产品", models)
+        self.assertIn("丁产品", models)
+        self.assertIn("4000元", [it["价格"] for it in items])
+
+    def test_price_quote_skips_merged_title_row_with_name_as_price(self) -> None:
+        # 合并标题行（如 FC200 表首每列都是 "DJI FlyCart 200"）不得被当成报价行，
+        # 否则会从名称里的数字误抠出价格（FlyCart 200 → 200 元）
+        text = (
+            "# 工作表：FC200\n"
+            "| DJI FlyCart 200 | DJI FlyCart 200 | DJI FlyCart 200 | DJI FlyCart 200 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 序号 | 规格型号 | 数量 | 单价 |\n"
+            "| --- | --- | --- | --- |\n"
+            "| 1 | DJI FlyCart 200 | 1 | 133999 |\n"
+        )
+        items = extract_price_quote_items(text)
+        prices_by_model = {it["型号"]: it["价格"] for it in items}
+        # 取到真实单价，而不是名称里的 200
+        self.assertEqual(prices_by_model.get("DJI FlyCart 200"), "133999元")
+        self.assertNotIn("200元", prices_by_model.values())
+
+    def test_price_quote_items_not_capped(self) -> None:
+        # 报价清单不得静默截断到前 10 条（旧逻辑 return items[:10] 会丢掉绝大多数产品）
+        rows = "".join(f"| {i} | 产品{i:02d} | 1 | {1000+i} |\n" for i in range(1, 16))
+        text = (
+            "| 序号 | 产品型号 | 数量 | 单价 |\n"
+            "| --- | --- | --- | --- |\n"
+            + rows
+        )
+        items = extract_price_quote_items(text)
+        self.assertEqual(len(items), 15)
+
+    def test_price_quote_summary_is_structured_not_raw_table_row(self) -> None:
+        # 报价清单资料摘要应是结构化事实（产品数 + 价格区间），而非塞入被截断的原始表格行
+        payload = {
+            "推荐模板": "报价清单模板",
+            "标题": "大疆无人机报价",
+            "报价单名称字段": "大疆无人机报价",
+            "产品型号价格字段": [
+                {"型号": "甲产品", "价格": "1000元"},
+                {"型号": "乙产品", "价格": "133999元"},
+            ],
+            "文本预览": "| 序号 | 产品型号 | 整机重量：55 千克某些被截断的表格内容毫",
+        }
+        sections = build_price_quote_sections(payload)
+        summary = sections["资料摘要"]
+        self.assertIn("2 项", summary)
+        self.assertIn("1,000", summary)
+        self.assertIn("133,999", summary)
+        # 不应直接搬运原始表格行
+        self.assertNotIn("整机重量", summary)
 
     def test_clean_summary_field_removes_truncated_html_tail(self) -> None:
         # 文本预览被定长截断后，末尾常残留未闭合的 <details>/<summary>块（连同被截断的描述首字母）

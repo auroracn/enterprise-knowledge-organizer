@@ -3475,6 +3475,42 @@ class MinimumWorkflowTest(unittest.TestCase):
         items = extract_price_quote_items(text)
         self.assertEqual(len(items), 15)
 
+    def test_price_quote_prefers_product_name_over_merged_spec_model_column(self) -> None:
+        # 一张表同时有"规格型号"与"产品名称"时，规格型号常被合并单元格填成同名
+        # （如 FC200 多款套装的规格型号都是 "DJI FlyCart 200"），应取"产品名称"列区分 SKU。
+        text = (
+            "# 工作表：FC200\n"
+            "| 序号 | 规格型号 | 产品名称 | 数量 | 单价 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1 | DJI FlyCart 200 | DJI FlyCart 200标准吊运套装（C12000充电器版） | 1 | 133999 |\n"
+            "| 2 | DJI FlyCart 200 | DJI FlyCart 200旗舰空吊套装（C12000充电器版） | 1 | 160999 |\n"
+        )
+        items = extract_price_quote_items(text)
+        models = [it["型号"] for it in items]
+        self.assertIn("DJI FlyCart 200标准吊运套装（C12000充电器版）", models)
+        self.assertIn("DJI FlyCart 200旗舰空吊套装（C12000充电器版）", models)
+        # 不能塌缩成被合并填充的"规格型号"列同名值
+        self.assertNotEqual(models, ["DJI FlyCart 200"])
+
+    def test_price_quote_keeps_same_name_rows_with_different_prices(self) -> None:
+        # 合并单元格会让多行"型号"列重复同名（如 FC30 套装三行同名、不同价格），
+        # 表头列路径必须按 (名称,价格) 去重而非纯名称，否则不同价格的真实 SKU 被静默丢弃。
+        text = (
+            "# 工作表：FC30\n"
+            "| 序号 | 产品型号 | 数量 | 市场单价/元 | 市场总价/元 |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 1 | 大疆fc30标准套装-充电器版 | 1 | 77999 | 77999 |\n"
+            "| - | 大疆fc30标准套装-充电器版 | 1 | 20000 | 20000 |\n"
+            "| 2 | 大疆fc30标准套装-充电器版 | 1 | 13999 | 13999 |\n"
+            "| 合计 | 合计 | 合计 | 合计 | 111998 |\n"
+        )
+        items = extract_price_quote_items(text)
+        prices = sorted(it["价格"] for it in items)
+        # 三个不同价格都应保留（旧逻辑按名称去重只剩 77999）
+        self.assertEqual(prices, ["13999元", "20000元", "77999元"])
+        # 合计行不得作为商品
+        self.assertNotIn("合计", [it["型号"] for it in items])
+
     def test_price_quote_summary_is_structured_not_raw_table_row(self) -> None:
         # 报价清单资料摘要应是结构化事实（产品数 + 价格区间），而非塞入被截断的原始表格行
         payload = {

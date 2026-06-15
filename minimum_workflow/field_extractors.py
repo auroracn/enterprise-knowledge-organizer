@@ -2058,8 +2058,11 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
     seen_models: set[str] = set()
     _SKIP_MODELS = {"GPS", "GNSS", "RTK", "IMU", "CPU", "APP", "IP4", "IP5", "IP6", "GB", "GH", "GLONASS", "MAX"}
     _TABLE_HEADERS = ("序号", "设备名称", "名称", "型号", "品目", "技术参数", "设备说明", "说明", "设备图片", "图片", "总价最高限价", "总价最高限", "单价最高限价", "单价最高限", "合计", "小计", "总计", "限价", "最高限价")
-    # 名称列表头候选（用于按表头定位列）
-    _NAME_HEADERS = ("设备名称", "产品名称", "货物名称", "品名", "名称", "项目名称", "型号", "品目", "产品", "设备")
+    # 名称列表头候选（用于按表头定位列）。
+    # 顺序即优先级：当一张表同时有"产品名称"和"规格型号/型号"时，
+    # 优先取"产品名称"——它通常是区分不同 SKU 的列；而"规格型号"列常被合并单元格
+    # 填成同名（如 FC200 六款套装在规格型号列都写 "DJI FlyCart 200"），取它会丢配置差异。
+    _NAME_HEADERS = ("产品名称", "货物名称", "设备名称", "品名", "项目名称", "名称", "规格型号", "型号", "品目", "产品", "设备")
     # 价格列表头候选，按优先级排序（优先"总价"，无则"单价"）
     _PRICE_HEADERS_PRIMARY = ("设备总价", "总价", "合计", "小计", "金额", "总金额", "总价最高限价", "总价最高限")
     _PRICE_HEADERS_FALLBACK = ("设备单价", "单价", "价格", "报价", "单价最高限价", "单价最高限", "限价", "最高限价")
@@ -2068,12 +2071,12 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
         cell = cell.strip()
         return any(h == cell or h in cell for h in _TABLE_HEADERS)
 
-    def _add_item(model: str, price_str: str) -> bool:
+    def _add_item(model: str, price_str: str, dedup_by_name: bool = True) -> bool:
         model = model.strip()
         price_str = price_str.strip().replace(",", "")
         if not model or not price_str:
             return False
-        if model in seen_models or model.upper() in _SKIP_MODELS:
+        if model.upper() in _SKIP_MODELS:
             return False
         # 跳过纯数字（序号列）
         if re.fullmatch(r"\d+", model):
@@ -2088,7 +2091,14 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
             return False
         if price_val < 100:
             return False
-        seen_models.add(model)
+        # 表头列路径里，每个数据行都是源表真实报价行，不能按名称去重——
+        # 合并单元格会让"型号/规格型号"列在多行重复（如 FC200 六款套装都填同名），
+        # 按名称去重会把不同价格的真实 SKU 静默丢掉。此路径用 (名称,价格) 作为去重键，
+        # 仅挡完全重复行；盲取兜底路径仍按名称去重，避免同一产品被正则重复命中。
+        dedup_key = model if dedup_by_name else f"{model} {price_str}"
+        if dedup_key in seen_models:
+            return False
+        seen_models.add(dedup_key)
         items.append({"型号": clean_value(model), "价格": f"{price_str}元"})
         return True
 
@@ -2105,10 +2115,15 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
         """根据表头行定位（名称列索引, 价格列索引）。"""
         name_idx = -1
         price_idx = -1
-        # 名称列：取最先命中的名称类表头
-        for i, cell in enumerate(cells):
-            if any(h in cell for h in _NAME_HEADERS):
-                name_idx = i
+        # 名称列：按 _NAME_HEADERS 的优先级（而非列位置）选列——
+        # 先找命中"产品名称"的列，没有再退"规格型号/型号"。这样当一张表两者都有时，
+        # 优先取区分 SKU 的"产品名称"列，避免取到被合并单元格填成同名的"规格型号"列。
+        for header in _NAME_HEADERS:
+            for i, cell in enumerate(cells):
+                if header in cell:
+                    name_idx = i
+                    break
+            if name_idx >= 0:
                 break
         # 价格列：优先总价类，回退单价类
         for headers in (_PRICE_HEADERS_PRIMARY, _PRICE_HEADERS_FALLBACK):
@@ -2158,7 +2173,9 @@ def extract_price_quote_items(text: str) -> list[dict[str, str]]:
             price_match = re.fullmatch(r"(\d[\d,]*(?:\.\d+)?)\s*(?:元|万元|万)?", price_cell)
             if not price_match:
                 continue
-            _add_item(name, price_match.group(1))
+            # 表头列路径：每个数据行都是源表真实报价行，按 (名称,价格) 去重而非纯名称，
+            # 否则合并单元格导致的同名行（如 FC200 六款不同价格套装）会被静默丢弃。
+            _add_item(name, price_match.group(1), dedup_by_name=False)
 
     # 回退：无可用表头时，沿用旧的盲取启发式
     if not used_header_columns:

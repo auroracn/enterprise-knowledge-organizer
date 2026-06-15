@@ -238,18 +238,46 @@ class RagflowClient:
         return {}
 
     def wait_for_parsing(self, dataset_id: str, document_id: str, *, timeout_seconds: int = 120) -> dict[str, Any]:
-        """等待文档解析完成。"""
+        """等待文档解析完成。
+
+        RAGFlow 文档解析状态在 `run` 字段（UNSTART/RUNNING/DONE/FAIL/CANCEL），
+        而 `status`（"1"/"0"）表示文档启用与否，二者不可混用——之前只看 status 永远等不到完成。
+        """
         deadline = time.time() + timeout_seconds
         last_payload: dict[str, Any] = {}
         while time.time() < deadline:
             last_payload = self.get_document_status(dataset_id, document_id)
-            status = str(last_payload.get("status") or "").lower()
-            if status in {"done", "completed", "finished"}:
+            run_state = str(last_payload.get("run") or last_payload.get("status") or "").strip().lower()
+            if run_state in {"done", "completed", "finished"}:
                 return last_payload
-            if status in {"error", "failed"}:
+            if run_state in {"fail", "failed", "error", "cancel", "canceled", "cancelled"}:
                 return last_payload
             time.sleep(2)
         return last_payload
+
+
+def extract_uploaded_document_id(upload_response: Any) -> str | None:
+    """从 RAGFlow 上传响应中取出文档 ID。
+
+    RAGFlow `POST /documents` 把文档信息放在 `data` 数组里（data[0].id），
+    而非顶层 id——之前直接取顶层 `document_id`/`id` 永远是 None，导致解析从不触发、
+    chunk_count=0、run=UNSTART。这里按 data 数组优先，再回退顶层与常见别名。
+    """
+    if not isinstance(upload_response, dict):
+        return None
+    data = upload_response.get("data")
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            doc_id = first.get("id") or first.get("document_id") or first.get("doc_id")
+            if doc_id:
+                return str(doc_id)
+    if isinstance(data, dict):
+        doc_id = data.get("id") or data.get("document_id") or data.get("doc_id")
+        if doc_id:
+            return str(doc_id)
+    doc_id = upload_response.get("document_id") or upload_response.get("id") or upload_response.get("doc_id")
+    return str(doc_id) if doc_id else None
 
 
 def upload_markdown_to_ragflow(
@@ -257,22 +285,39 @@ def upload_markdown_to_ragflow(
     dataset_id: str,
     markdown_path: Path,
     display_name: str | None = None,
+    *,
+    wait_for_parsing: bool = True,
+    parse_timeout_seconds: int = 120,
 ) -> dict[str, Any]:
-    """上传 Markdown 文件到 RAGFlow 知识库。"""
+    """上传 Markdown 文件到 RAGFlow 知识库，并自动触发解析。
+
+    返回上传响应，并附加 `_parse` 字段记录解析触发与状态，便于上层判断是否真的入库成功
+    （不再静默吞掉解析失败）。
+    """
     file_name = display_name or markdown_path.name
     result = client.upload_document(dataset_id, markdown_path, file_name)
+    parse_info: dict[str, Any] = {"triggered": False, "document_id": None, "run": None, "error": None}
 
-    # 触发解析
-    document_id = None
+    document_id = extract_uploaded_document_id(result)
+    parse_info["document_id"] = document_id
+    if not document_id:
+        parse_info["error"] = "上传响应中未找到 document_id，无法触发解析。"
+        if isinstance(result, dict):
+            result["_parse"] = parse_info
+        return result
+
+    try:
+        client.parse_document(dataset_id, [document_id])
+        parse_info["triggered"] = True
+        if wait_for_parsing:
+            status_payload = client.wait_for_parsing(dataset_id, document_id, timeout_seconds=parse_timeout_seconds)
+            parse_info["run"] = status_payload.get("run") or status_payload.get("status")
+            parse_info["chunk_count"] = status_payload.get("chunk_count")
+    except Exception as exc:  # 触发或轮询失败不阻断流程，但必须如实回报，不再 pass
+        parse_info["error"] = str(exc)
+
     if isinstance(result, dict):
-        document_id = result.get("document_id") or result.get("id")
-
-    if document_id:
-        try:
-            client.parse_document(dataset_id, [document_id])
-        except Exception:
-            pass  # 解析触发失败不影响上传结果
-
+        result["_parse"] = parse_info
     return result
 
 
@@ -298,11 +343,23 @@ def batch_upload_to_ragflow(
 
         try:
             result = upload_markdown_to_ragflow(client, dataset_id, file_path)
+            parse_info = result.get("_parse", {}) if isinstance(result, dict) else {}
+            parse_error = parse_info.get("error")
             results.append({
                 "file": str(file_path),
                 "status": "success",
+                "parse_triggered": bool(parse_info.get("triggered")),
+                "parse_run": parse_info.get("run"),
+                "parse_error": parse_error,
                 "result": result,
             })
+            if progress_callback and parse_error:
+                progress_callback({
+                    "phase": "warning",
+                    "total": total,
+                    "done": index,
+                    "message": f"[{index}/{total}] {file_path.name} 已上传但解析未完成：{parse_error}",
+                })
         except Exception as exc:
             results.append({
                 "file": str(file_path),
@@ -312,11 +369,12 @@ def batch_upload_to_ragflow(
 
     if progress_callback:
         success_count = sum(1 for r in results if r["status"] == "success")
+        parsed_count = sum(1 for r in results if r["status"] == "success" and r.get("parse_triggered") and not r.get("parse_error"))
         progress_callback({
             "phase": "complete",
             "total": total,
             "done": total,
-            "message": f"上传完成：成功 {success_count}/{total}",
+            "message": f"上传完成：成功 {success_count}/{total}，已触发解析 {parsed_count}/{total}",
         })
 
     return results

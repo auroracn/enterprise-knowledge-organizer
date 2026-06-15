@@ -6057,5 +6057,51 @@ class CleanMineruMarkdownTableTest(unittest.TestCase):
         self.assertIn("正文第一段", blocks[1])
 
 
+class RagflowUploadParseTest(unittest.TestCase):
+    def test_extract_uploaded_document_id_from_data_array(self) -> None:
+        # RAGFlow 上传响应把文档放在 data 数组里，必须从 data[0].id 取
+        from minimum_workflow.ragflow_import_service import extract_uploaded_document_id
+        response = {"code": 0, "data": [{"id": "doc_abc123", "name": "FC100.md"}]}
+        self.assertEqual(extract_uploaded_document_id(response), "doc_abc123")
+
+    def test_extract_uploaded_document_id_fallbacks(self) -> None:
+        from minimum_workflow.ragflow_import_service import extract_uploaded_document_id
+        # data 为对象
+        self.assertEqual(extract_uploaded_document_id({"data": {"id": "d1"}}), "d1")
+        # 顶层别名
+        self.assertEqual(extract_uploaded_document_id({"document_id": "d2"}), "d2")
+        # 找不到时返回 None，不会误报
+        self.assertIsNone(extract_uploaded_document_id({"code": 0, "data": []}))
+        self.assertIsNone(extract_uploaded_document_id("not-a-dict"))
+
+    def test_upload_markdown_triggers_parse_with_correct_document_id(self) -> None:
+        # 回归 UNSTART/chunk_count=0：取到 data 数组里的 id 后必须真正触发 parse_document
+        from minimum_workflow.ragflow_import_service import upload_markdown_to_ragflow
+
+        client = Mock()
+        client.upload_document.return_value = {"code": 0, "data": [{"id": "doc_xyz", "name": "x.md"}]}
+        client.wait_for_parsing.return_value = {"run": "DONE", "chunk_count": 12}
+
+        result = upload_markdown_to_ragflow(client, "ds1", Path("x.md"))
+
+        client.parse_document.assert_called_once_with("ds1", ["doc_xyz"])
+        self.assertTrue(result["_parse"]["triggered"])
+        self.assertIsNone(result["_parse"]["error"])
+        self.assertEqual(result["_parse"]["document_id"], "doc_xyz")
+
+    def test_upload_markdown_reports_error_when_document_id_missing(self) -> None:
+        # 取不到 id 时不能静默——必须如实回报，且不触发 parse
+        from minimum_workflow.ragflow_import_service import upload_markdown_to_ragflow
+
+        client = Mock()
+        client.upload_document.return_value = {"code": 0, "data": []}
+
+        result = upload_markdown_to_ragflow(client, "ds1", Path("x.md"))
+
+        client.parse_document.assert_not_called()
+        self.assertFalse(result["_parse"]["triggered"])
+        self.assertIsNotNone(result["_parse"]["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

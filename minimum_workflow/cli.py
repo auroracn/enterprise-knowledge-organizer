@@ -420,14 +420,21 @@ def deduplicate_by_content(
 ) -> tuple[list[Path], list[dict[str, str]]]:
     """跨目录内容去重：相同内容（MD5）的文件只保留一个。"""
     hash_groups: dict[str, list[Path]] = {}
+    passthrough_sources: list[Path] = []
     for source_path in scan_sources:
+        # 目录型来源（如分页扫描图片目录）无法按文件计算 MD5，直接透传，
+        # 否则会被 OSError 分支静默丢弃，导致整目录跳过且不计失败、错误放行未复核产物。
+        if not source_path.is_file():
+            passthrough_sources.append(source_path)
+            continue
         try:
             file_hash = _compute_file_hash(source_path)
         except OSError:
+            passthrough_sources.append(source_path)
             continue
         hash_groups.setdefault(file_hash, []).append(source_path)
 
-    selected_sources: list[Path] = []
+    selected_sources: list[Path] = list(passthrough_sources)
     new_skipped: list[dict[str, str]] = []
     for file_hash, grouped_paths in hash_groups.items():
         if len(grouped_paths) == 1:

@@ -32,7 +32,12 @@ from minimum_workflow.cli import (
 )
 from minimum_workflow.contracts import ExtractionResult, SampleRecord, get_sample_by_id, load_contract
 from minimum_workflow.extractors import build_bid_summary_metadata, clean_mineru_markdown, extract_legacy_excel_text, extract_pdf_text, extract_pdf_with_mineru, extract_text, request_mineru_batch_upload_urls
-from minimum_workflow.field_extractors import extract_fields, normalize_policy_date
+from minimum_workflow.field_extractors import (
+    extract_fields,
+    extract_price_quote_items,
+    normalize_policy_date,
+)
+from minimum_workflow.markdown_templates import clean_summary_field
 from minimum_workflow.qwen_client import enrich_payload_with_qwen, normalize_solution_summary_payload
 from minimum_workflow.pipeline import (
     DIRECTORY_TYPE,
@@ -2141,20 +2146,16 @@ class MinimumWorkflowTest(unittest.TestCase):
 
         self.assertIn("## 一、企业摘要", markdown)
         self.assertIn("企业摘要", markdown)
-        self.assertIn("- 主营方向：工业无人机系统生产与行业服务", markdown)
-        self.assertIn("- 核心产品：MF120侦察无人机", markdown)
-        self.assertIn("- 核心能力：研发制造", markdown)
-        self.assertIn("- 企业名称：南京跃飞智能科技有限公司", markdown)
-        self.assertIn("荣获国家级专精特新小巨人", markdown)
-        self.assertIn("## 六、荣誉资质与标准线索", markdown)
-        self.assertIn("国家级标准", markdown)
-        self.assertIn("## 七、创始人与团队线索", markdown)
-        self.assertIn("云深处科技创始人&CEO", markdown)
-        self.assertIn("## 八、分支机构与布局覆盖", markdown)
-        self.assertIn("50个国家和地区", markdown)
-        self.assertIn("## 九、产品生态与应用线索", markdown)
-        self.assertIn("绝影 X30", markdown)
+        self.assertIn("主营方向：工业无人机系统生产与行业服务", markdown)
+        self.assertIn("核心产品：MF120侦察无人机", markdown)
+        self.assertIn("核心能力：研发制造", markdown)
+        self.assertIn("南京跃飞智能科技有限公司", markdown)
+        self.assertIn("## 二、主营方向与能力", markdown)
+        self.assertIn("## 三、代表产品或服务", markdown)
+        # 深度线索（荣誉/创始人/布局/产品生态）不再切结构化锚点，全部并入原文全文保留
         self.assertIn("## 原文全文", markdown)
+        self.assertIn("荣获国家级专精特新小巨人", markdown)
+        self.assertIn("绝影 X30", markdown)
         self.assertIn("# 第5页\n发展历程", markdown)
 
     def test_supplier_template_markdown_omits_empty_fields_and_noisy_preview(self) -> None:
@@ -2270,7 +2271,7 @@ class MinimumWorkflowTest(unittest.TestCase):
         self.assertIn("## 二、培训主题", markdown)
         self.assertIn("## 五、专业方向/课程体系", markdown)
         self.assertIn("## 八、字段提取结果", markdown)
-        self.assertIn("## 九、课程体系与合作模式原文", markdown)
+        # 课程体系/合作模式原文不再独立切章，统一并入原文全文保留
         self.assertIn("## 原文全文", markdown)
         self.assertIn("# 第33页\n产教融合", markdown)
         self.assertIn("绝影Lite3系列实训台", markdown)
@@ -2583,9 +2584,17 @@ class MinimumWorkflowTest(unittest.TestCase):
         extraction = ExtractionResult(
             extractor_name="text:utf-8-sig",
             extraction_status="已提取文本",
-            extracted_text="重庆市推动低空经济高质量发展若干政策措施",
+            extracted_text=(
+                "文件名称：《重庆市推动低空经济高质量发展若干政策措施》\n"
+                "发文字号：渝府办发〔2025〕58号\n"
+                "成文日期：2025年11月22日\n"
+                "发文单位：重庆市人民政府办公厅\n"
+                "一、支持创新打造低空示范场景\n"
+                "二、支持低空产业创新发展\n"
+                "本政策措施自印发之日起施行，有效期至2027年12月31日止。"
+            ),
             preview_text="重庆市推动低空经济高质量发展若干政策措施 支持创新打造低空示范场景",
-            text_length=50,
+            text_length=120,
             page_count=None,
             source_encoding="utf-8-sig",
             note="已完成文本文件读取。",
@@ -2595,10 +2604,10 @@ class MinimumWorkflowTest(unittest.TestCase):
             payload, _ = build_structured_payload(sample, contract)
             markdown = build_markdown(sample, payload)
 
+        # 政策模板实际渲染的章节：文件摘要、核心要求（由核心任务驱动）、时效与边界、字段提取结果。
+        # 「业务相关」「执行意义」在 build_policy_sections 中恒为空，按空字段跳过优化不输出。
         self.assertIn("## 一、文件摘要", markdown)
         self.assertIn("## 二、核心要求", markdown)
-        self.assertIn("## 三、与低空/长风业务相关的部分", markdown)
-        self.assertIn("## 四、执行或应用意义", markdown)
         self.assertIn("## 五、时效与边界", markdown)
         self.assertIn("## 六、字段提取结果", markdown)
 
@@ -2715,7 +2724,7 @@ class MinimumWorkflowTest(unittest.TestCase):
         self.assertEqual(payload["主营方向"], "低空飞行器研发、制造、行业应用解决方案")
         self.assertIn("无人机平台", payload["核心产品"])
         self.assertIn("研发制造", payload["核心能力"])
-        self.assertIn("## 四、字段提取结果", markdown)
+        self.assertIn("## 一、企业摘要", markdown)
 
     def test_supplier_brochure_fields_capture_product_lines_and_key_products(self) -> None:
         contract = load_contract()
@@ -3342,6 +3351,98 @@ class MinimumWorkflowTest(unittest.TestCase):
 
         self.assertEqual(payload["产品名称字段"], "清洗无人机一览表")
         self.assertEqual(payload["型号字段"], "")
+
+    def test_product_manual_with_multiple_products_lists_models(self) -> None:
+        # 多产品手册：型号字段应为多款产品清单，而非误填某个兼容机型
+        sample = SampleRecord(
+            sample_id="scan_multi_product_brochure",
+            source_path="D:/长风资料/长风/长风产品图册.pdf",
+            document_category="产品/设备",
+            recommended_template="产品设备模板",
+            title_hint="长风产品图册",
+            subject_name_hint="长风产品图册",
+            product_name_hint="",
+            unit_name_hint="",
+            tags=["目录扫描", "自动判型"],
+            risks=[],
+            notes=[],
+            evidence_level="L2",
+            fallback_decision="待审核",
+            split_required=False,
+            split_note="",
+        )
+        extraction = ExtractionResult(
+            extractor_name="mineru:batch",
+            extraction_status="已提取文本",
+            extracted_text=(
+                "## 长风智航产品手册\n"
+                "## UltraHive Mk4 Pro 固定式充换电一体机库\n"
+                "机库支持DJI M350 RTK自动充电与自动换电。\n"
+                "## MobileHive Mk3 无人机移动航母\n"
+                "空地一体化视角。\n"
+                "## UltraHive MkZ 千巢 固定翼无人机机场\n"
+                "全自动充电。\n"
+            ),
+            preview_text="长风智航产品手册",
+            text_length=200,
+            page_count=20,
+            source_encoding="utf-8",
+            note="已通过 MinerU 批量接口完成 Markdown 提取。",
+        )
+
+        payload = extract_fields(sample, extraction)
+
+        models = payload["型号字段"]
+        self.assertIsInstance(models, list)
+        self.assertIn("UltraHive Mk4 Pro 固定式充换电一体机库", models)
+        self.assertIn("MobileHive Mk3 无人机移动航母", models)
+        self.assertIn("UltraHive MkZ 千巢 固定翼无人机机场", models)
+        # 不得把兼容机型 M350 当作本产品唯一型号
+        self.assertNotEqual(payload["型号字段"], "M350")
+
+    def test_price_quote_items_use_header_to_locate_name_and_price_columns(self) -> None:
+        # 报价表列定位：应按表头取"设备名称列 + 设备总价列"，而非盲取第一列与某数字列
+        text = (
+            "| 序号 | 设备名称 | 设备图片 | 设备单价 | 设备数量 | 设备总价 | 设备说明 |\n"
+            "| --- | --- | --- | --- | --- | --- | --- |\n"
+            "| 1 | 大疆M400-标准版 |   | 77115 | 1 | 77115 | 含飞机、电池 |\n"
+            "| 2 | 大疆M400-电池 |   | 7998 | 2 | 15996 | TB100 电池 |\n"
+            "| 3 | 合计 |   |   |   | 118470 |   |\n"
+        )
+
+        items = extract_price_quote_items(text)
+
+        models = [it["型号"] for it in items]
+        prices = [it["价格"] for it in items]
+        self.assertIn("大疆M400-标准版", models)
+        self.assertIn("大疆M400-电池", models)
+        self.assertIn("77115元", prices)
+        # 第2行取总价列 15996，而非单价列 7998
+        self.assertIn("15996元", prices)
+        self.assertNotIn("7998元", prices)
+        # 合计汇总行不得作为商品
+        self.assertNotIn("合计", models)
+        # 不得把表头文字"设备说明"当成型号
+        self.assertNotIn("设备说明", models)
+
+    def test_clean_summary_field_removes_truncated_html_tail(self) -> None:
+        # 文本预览被定长截断后，末尾常残留未闭合的 <details>/<summary>块（连同被截断的描述首字母）
+        preview = (
+            "<details> <summary>natural_image</summary> "
+            "Illustration of renewable energy concepts </details> "
+            "长风智航产品手册 PRODUCT BROCHURE 长风智航产品体系 星逻驭光 星逻万象 星逻御风 "
+            "<details> <summary>f"
+        )
+
+        cleaned = clean_summary_field(preview)
+
+        # 开头完整 HTML 块去掉，正文保留，末尾残缺标签与被截断的 "f" 一并清除
+        self.assertIn("长风智航产品手册", cleaned)
+        self.assertIn("星逻御风", cleaned)
+        self.assertNotIn("<details>", cleaned)
+        self.assertNotIn("<summary>", cleaned)
+        self.assertNotIn("natural_image", cleaned)
+        self.assertFalse(cleaned.rstrip().endswith("f"))
 
     def test_infer_document_title_skips_markdown_table_header(self) -> None:
         title = sample_docx_extract_to_md.infer_document_title(

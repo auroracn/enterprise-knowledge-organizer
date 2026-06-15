@@ -236,12 +236,17 @@ def extract_contact_fields(sample: SampleRecord, extraction: ExtractionResult) -
 def extract_product_fields(sample: SampleRecord, extraction: ExtractionResult) -> dict[str, Any]:
     text = extraction.extracted_text or ""
     product_name = infer_product_name(sample, text)
-    model_name = infer_product_model(sample, text)
+    # 多产品手册：型号字段填多款产品清单，避免误填某个兼容机型；单产品时回退单型号
+    product_models = infer_product_models(text)
+    model_name: Any = product_models if product_models else infer_product_model(sample, text)
     supplier_name = infer_product_supplier(sample, text)
     product_type = infer_product_type(sample, text)
-    core_usage = infer_product_usage(text)
-    core_params = infer_product_params(text)
-    application_scene = infer_product_scene(sample, text)
+    # 多产品手册：核心用途/核心参数/适用场景均假设"单一产品"，对混装手册无意义且易误判
+    # （如正文偶现"气象"被当成全篇定性）；此时留空，相关内容由"原文全文"节完整保留。
+    is_multi_product = bool(product_models)
+    core_usage = "" if is_multi_product else infer_product_usage(sample, text)
+    core_params = "" if is_multi_product else infer_product_params(text)
+    application_scene = "" if is_multi_product else infer_product_scene(sample, text)
     relation_summary = infer_product_relations(text)
     evidence_type = infer_product_evidence_type(sample, text)
     report_document_type = infer_report_document_type(sample, text)
@@ -739,6 +744,7 @@ def infer_product_model(sample: SampleRecord, text: str) -> str:
     labeled_model = first_match(text, [r"型号[:：]\s*([^\n]+)"], "")
     if labeled_model and not looks_like_product_table_noise(labeled_model):
         return labeled_model
+    # 英文型号
     hint_match = re.search(r"([A-Z]{1,4}-?[A-Z0-9]{1,8})", sample.product_name_hint or sample.title_hint)
     if hint_match:
         return hint_match.group(1)
@@ -754,7 +760,59 @@ def infer_product_model(sample: SampleRecord, text: str) -> str:
         if re.search(r"\d{4,}", candidate) and re.search(battery_pattern, text, re.IGNORECASE):
             continue
         return candidate
+    # 中文型号（如"大疆T60""绝影X30"）——真实型号须含数字，避免误抓 GPS、清洗无人机A 等
+    cn_model_matches = re.findall(r"([一-鿿A-Za-z]{2,8}[\-]?[A-Z0-9]{1,6})", text)
+    for candidate in cn_model_matches:
+        if looks_like_product_table_noise(candidate):
+            continue
+        if any(skip in candidate for skip in ("有限公司", "科技", "技术", "智能")):
+            continue
+        if candidate.upper() in {"GPS", "GNSS", "RTK", "IMU", "CPU", "APP", "GLONASS"}:
+            continue
+        # 真实型号码的字母数字段须同时含字母与数字（如 T60、X30、M350）；
+        # 仅含数字的多为规格值（载荷20、续航15），仅含字母的多为名称尾字（清洗无人机A）
+        if not (re.search(r"[A-Za-z]", candidate) and re.search(r"\d", candidate)):
+            continue
+        return candidate
     return ""
+
+
+def infer_product_models(text: str) -> list[str]:
+    """多产品手册：从一级标题中抽取多款产品的型号/名称清单。
+
+    识别规律：产品手册的一级标题形如「型号码 + 中文品类描述」
+    （UltraHive Mk4 Pro 固定式充换电一体机库 / MobileHive Mk3P无人机移动航母），
+    或「长风X 平台」系列产品名。仅在检测到 >=2 款时返回清单，单款时返回空（回退单型号逻辑）。
+    """
+    # 产品品类描述词：标题命中其一才视为产品条目，过滤"防护等级/落地案例"等子标题
+    product_category_words = (
+        "机库", "充电", "换电", "航母", "无人机", "机场", "平台", "终端",
+        "操作系统", "机器人", "飞行器", "系统",
+    )
+    models: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"^##\s+(.+?)\s*$", text, re.MULTILINE):
+        title = raw.strip()
+        # 必须含产品品类词
+        if not any(word in title for word in product_category_words):
+            continue
+        # 含英文型号码（字母+数字混合，如 Mk4、Mk3P、MkZ）或"长风X"系列产品名
+        has_en_model = bool(re.search(r"[A-Za-z]+[A-Za-z0-9]*\d[A-Za-z0-9]*", title)) or bool(
+            re.search(r"Mk[A-Za-z0-9]", title)
+        )
+        has_cn_brand = bool(re.match(r"^(?:长风|星逻)[一-鿿]{1,4}\b", title))
+        if not (has_en_model or has_cn_brand):
+            continue
+        # 跳过明显的目录/封面标题
+        if any(skip in title for skip in ("产品手册", "产品体系", "PRODUCT", "BROCHURE")):
+            continue
+        # 归一化空白
+        norm = re.sub(r"\s+", " ", title)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        models.append(norm)
+    return models if len(models) >= 2 else []
 
 
 def infer_product_supplier(sample: SampleRecord, text: str) -> str:
@@ -787,10 +845,19 @@ def infer_product_type(sample: SampleRecord, text: str) -> str:
     return "未注明"
 
 
-def infer_product_usage(text: str) -> str:
-    if "气象" in text:
+def infer_product_usage(sample: SampleRecord, text: str) -> str:
+    # 核心用途是需正文支撑的描述性字段，正文为空时不硬填（与"适用场景"可由产品名直接推断不同）
+    if not text.strip():
+        return ""
+    # 产品定性优先看产品名/标题（如"电子气象仪"），避免正文里偶现的"气象""检测"被当成全篇用途
+    identity = " ".join([
+        sample.title_hint or "",
+        sample.product_name_hint or "",
+        sample.subject_name_hint or "",
+    ])
+    if "气象" in identity:
         return "用于气象监测与环境数据采集"
-    if "检测" in text:
+    if "检测" in identity:
         return "用于检测验证与性能证明"
     return first_match(text, [r"核心用途[:：]\s*([^\n]+)"], "")
 
@@ -1988,21 +2055,117 @@ def infer_price_quote_provider(sample: SampleRecord, text: str) -> str:
 
 def extract_price_quote_items(text: str) -> list[dict[str, str]]:
     items: list[dict[str, str]] = []
-    patterns = [
-        r"([A-Z]{1,4}-?[A-Z0-9]{1,8})\s*[:：]?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*(?:元|万元)?",
-        r"([A-Z]{1,4}-?[A-Z0-9]{1,8})[^\n]*?(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*元",
-        r"([^\n]{2,20}(?:系统|设备|平台|无人机|雷达|充电|电池|遥控|云台|相机))\s*[:：]?\s*(\d+(?:,\d{3})*(?:\.\d{1,2})?)\s*元",
-    ]
     seen_models: set[str] = set()
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        for model, price in matches:
-            if model in seen_models:
+    _SKIP_MODELS = {"GPS", "GNSS", "RTK", "IMU", "CPU", "APP", "IP4", "IP5", "IP6", "GB", "GH", "GLONASS", "MAX"}
+    _TABLE_HEADERS = ("序号", "设备名称", "名称", "型号", "品目", "技术参数", "设备说明", "说明", "设备图片", "图片", "总价最高限价", "总价最高限", "单价最高限价", "单价最高限", "合计", "小计", "总计", "限价", "最高限价")
+    # 名称列表头候选（用于按表头定位列）
+    _NAME_HEADERS = ("设备名称", "产品名称", "货物名称", "品名", "名称", "项目名称", "型号", "品目", "产品", "设备")
+    # 价格列表头候选，按优先级排序（优先"总价"，无则"单价"）
+    _PRICE_HEADERS_PRIMARY = ("设备总价", "总价", "合计", "小计", "金额", "总金额", "总价最高限价", "总价最高限")
+    _PRICE_HEADERS_FALLBACK = ("设备单价", "单价", "价格", "报价", "单价最高限价", "单价最高限", "限价", "最高限价")
+
+    def _is_header_label(cell: str) -> bool:
+        cell = cell.strip()
+        return any(h == cell or h in cell for h in _TABLE_HEADERS)
+
+    def _add_item(model: str, price_str: str) -> bool:
+        model = model.strip()
+        price_str = price_str.strip().replace(",", "")
+        if not model or not price_str:
+            return False
+        if model in seen_models or model.upper() in _SKIP_MODELS:
+            return False
+        # 跳过纯数字（序号列）
+        if re.fullmatch(r"\d+", model):
+            return False
+        # 跳过表头/汇总行
+        if _is_header_label(model):
+            return False
+        # 价格过小（<100）很可能是序号或其他数字，跳过
+        try:
+            price_val = float(price_str)
+        except ValueError:
+            return False
+        if price_val < 100:
+            return False
+        seen_models.add(model)
+        items.append({"型号": clean_value(model), "价格": f"{price_str}元"})
+        return True
+
+    def _split_row(line: str) -> list[str]:
+        # 去掉首尾管道符后按 | 切分单元格
+        body = line.strip()
+        if body.startswith("|"):
+            body = body[1:]
+        if body.endswith("|"):
+            body = body[:-1]
+        return [c.strip() for c in body.split("|")]
+
+    def _locate_columns(cells: list[str]) -> tuple[int, int] | None:
+        """根据表头行定位（名称列索引, 价格列索引）。"""
+        name_idx = -1
+        price_idx = -1
+        # 名称列：取最先命中的名称类表头
+        for i, cell in enumerate(cells):
+            if any(h in cell for h in _NAME_HEADERS):
+                name_idx = i
+                break
+        # 价格列：优先总价类，回退单价类
+        for headers in (_PRICE_HEADERS_PRIMARY, _PRICE_HEADERS_FALLBACK):
+            for i, cell in enumerate(cells):
+                if any(h in cell for h in headers):
+                    price_idx = i
+                    break
+            if price_idx >= 0:
+                break
+        if name_idx >= 0 and price_idx >= 0 and name_idx != price_idx:
+            return name_idx, price_idx
+        return None
+
+    # 优先：按表头定位列，逐行取"名称列 + 价格列"
+    lines = [ln for ln in text.split("\n") if ln.count("|") >= 2]
+    used_header_columns = False
+    for idx, line in enumerate(lines):
+        cells = _split_row(line)
+        cols = _locate_columns(cells)
+        if not cols:
+            continue
+        name_idx, price_idx = cols
+        used_header_columns = True
+        # 该表头行之后的数据行按列取值
+        for data_line in lines[idx + 1:]:
+            dcells = _split_row(data_line)
+            # 分隔行（--- | --- ）跳过
+            if all(re.fullmatch(r"[-:\s]*", c) for c in dcells):
                 continue
-            if model.upper() in {"GPS", "GNSS", "RTK", "IMU", "CPU", "APP"}:
+            if name_idx >= len(dcells) or price_idx >= len(dcells):
                 continue
-            seen_models.add(model)
-            items.append({"型号": clean_value(model), "价格": f"{price}元"})
+            name = dcells[name_idx]
+            price_cell = dcells[price_idx]
+            price_match = re.search(r"(\d[\d,.]*)", price_cell)
+            if not price_match:
+                continue
+            _add_item(name, price_match.group(1))
+        break  # 仅使用首个有效报价表头
+
+    # 回退：无可用表头时，沿用旧的盲取启发式
+    if not used_header_columns:
+        table_row_re = re.compile(
+            r"\|\s*([^|\n]{2,30}?)\s*\|\s*(?:[^|\n]*?\|){2,}\s*(\d[\d,.]*)\s*(?:元|万元|万)?\s*\|",
+            re.MULTILINE,
+        )
+        for m in table_row_re.finditer(text):
+            _add_item(m.group(1).strip(), m.group(2).strip())
+
+    # 补充：文本中的"产品名 + 价格"匹配
+    text_patterns = [
+        r"([一-鿿A-Za-z]{2,10}[\-]?\w{0,10}(?:无人机|系统|设备|平台))\s*[:：]?\s*(\d[\d,.]*)\s*(?:元|万元|万)",
+        r"([A-Z]{1,4}-?[A-Z0-9]{1,8})\s*[:：]?\s*(\d[\d,.]*)\s*(?:元|万元|万)",
+    ]
+    for pattern in text_patterns:
+        for model, price in re.findall(pattern, text):
+            _add_item(model, price)
+
     return items[:10]
 
 

@@ -10,6 +10,137 @@ from minimum_workflow.field_extractors import normalize_policy_date
 
 PAGE_HEADING_RE = re.compile(r"^#\s*第\d+页")
 
+# RAGFlow适配：清洗 MinerU OCR 输出中的 HTML 标签和噪声
+_HTML_TAG_RE = re.compile(r"<details>.*?</details>|<summary>.*?</summary>|(?:</?details>|</?summary>)", re.DOTALL)
+# 文本预览常被定长截断（如 300 字），末尾可能残留未闭合的 <details>/<summary>块（连同被截断的描述首字母，如 "<details> <summary>f"）；
+# 仅匹配"开标签后直到结尾都无对应闭标签"的残缺尾部，避免误删开头完整块之后的正文
+_TRUNCATED_HTML_TAIL_RE = re.compile(
+    r"<(?:details|summary)\b[^>]*>(?:(?!</(?:details|summary)>).)*$",
+    re.DOTALL | re.IGNORECASE,
+)
+_QR_CODE_DESC_RE = re.compile(r"QR\s*code.*?(?:logo|scanning|linking|embedded).*", re.IGNORECASE)
+_IMAGE_DESC_RE = re.compile(r"(?:text_image|natural_image|Street\s+photo|store\s+signboar).*", re.IGNORECASE)
+_MULTI_BLANK_RE = re.compile(r"\n{3,}")
+_PROMOTION_RE = re.compile(
+    r"(?:行业报告资源群|微信扫码|长期有效|行研无忧|免责申明|"
+    r"公众号|扫码加入|资源分享|报告下载|关注公众号|"
+    r"QQ群|微信群|加群|加入群聊).*",
+    re.IGNORECASE,
+)
+_PIPE残留_RE = re.compile(r"\s*\|\s*$")
+
+
+def _truncate_at_boundary(text: str, max_len: int = 500) -> str:
+    """截断文本到 max_len 字符，尽量不在词中间截断。"""
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len]
+    for sep in (" ", "。", "，", "、", "；", "\n"):
+        idx = truncated.rfind(sep)
+        if idx > max_len * 0.7:
+            return truncated[:idx] + "..."
+    return truncated + "..."
+
+
+def _deduplicate_sentences(text: str) -> str:
+    """去除连续重复的句子/短语（如 MinerU 多页合并导致的重复）。"""
+    if not text:
+        return ""
+    lines = text.splitlines()
+    deduped: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            deduped.append(line)
+            continue
+        if deduped and stripped == deduped[-1].strip():
+            continue
+        deduped.append(line)
+    return "\n".join(deduped)
+
+
+def clean_ocr_artifacts(text: str) -> str:
+    """清洗 MinerU OCR 输出中的 HTML 标签、图片描述、QR码描述、推广信息等噪声。"""
+    if not text:
+        return ""
+    cleaned = _TRUNCATED_HTML_TAIL_RE.sub("", text)
+    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    cleaned = _QR_CODE_DESC_RE.sub("", cleaned)
+    cleaned = _IMAGE_DESC_RE.sub("", cleaned)
+    cleaned = _PROMOTION_RE.sub("", cleaned)
+    cleaned = _PIPE残留_RE.sub("", cleaned)
+    cleaned = _MULTI_BLANK_RE.sub("\n\n", cleaned)
+    cleaned = _deduplicate_sentences(cleaned)
+    return cleaned.strip()
+
+
+# RAGFlow适配：摘要节/字段节专用清洗（比 clean_ocr_artifacts 更激进，仅用于结构化检索锚点节，不用于原文全文节）
+_MD_HEADING_PREFIX_RE = re.compile(r"^#+\s*", re.MULTILINE)  # 行首 markdown 标题符号
+_INLINE_HEADING_RE = re.compile(r"(?:^|(?<=[；;，,、\s]))#+\s*")  # 行中（"；"等分隔符后）的 # 残留
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)  # 表格行
+_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*[-:|\s]+\|.*$", re.MULTILINE)  # 表格分隔行
+_TABLE_SEP_INLINE_RE = re.compile(r"(?:\s*-{2,}\s*\|)+\s*-{0,}\s*")  # 压扁单行后的 "--- | --- | ---" 残留
+_PDF_CHAR_FRAGMENT_RE = re.compile(r"(?:[一-鿿A-Za-z]\s*[/／]\s*){3,}[一-鿿A-Za-z]")  # PDF 横排单字符碎片"开 / 拓 / 低 / 空"
+
+
+def _flatten_table_text(text: str) -> str:
+    """把（可能已压扁成单行的）markdown 表格内容转成可读纯文本：去掉管道符与分隔横杠，保留单元格文字。"""
+    cleaned = _TABLE_SEP_INLINE_RE.sub(" ", text)
+    cleaned = cleaned.replace("|", " ")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def clean_summary_field(text: str, max_len: int = 500) -> str:
+    """摘要节/字段节专用清洗：在 clean_ocr_artifacts 基础上额外去掉 markdown 标题、表格行、PDF 字符碎片。
+
+    适用范围：构建"资料摘要""核心参数""字段提取结果"等结构化节，确保给 RAGFlow 的检索锚点是干净的纯文本。
+    不适用范围：## 原文全文 节（要保留原文 markdown 结构与表格）。
+    """
+    if not text:
+        return ""
+    cleaned = clean_ocr_artifacts(text)
+    # 删表格分隔行（必须先于表格行，避免误判）
+    cleaned = _TABLE_SEP_RE.sub("", cleaned)
+    # 删整行表格
+    cleaned = _TABLE_ROW_RE.sub("", cleaned)
+    # 压扁单行形态的表格（structured.json 文本预览常被压成单行，行级正则够不着）：管道符密度高时整体转纯文本
+    if cleaned.count("|") >= 4:
+        cleaned = _flatten_table_text(cleaned)
+    # 删 PDF 横排字符碎片
+    cleaned = _PDF_CHAR_FRAGMENT_RE.sub("", cleaned)
+    # 去 markdown 标题前缀：行首 + 行中（分隔符后）两种形态
+    cleaned = _MD_HEADING_PREFIX_RE.sub("", cleaned)
+    cleaned = _INLINE_HEADING_RE.sub("", cleaned)
+    # 合并多余空白
+    cleaned = _MULTI_BLANK_RE.sub("\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) > max_len:
+        cleaned = _truncate_at_boundary(cleaned, max_len)
+    return cleaned
+
+
+def clean_field_value(value: str) -> str:
+    """字段值清洗：去掉单个值里的 markdown 标题前缀、表格残留、首尾空白，但不截断不分段。
+
+    用于字段提取结果（如"方案名称""产品名称"等单值字段），避免出现 "# 商务合作方案" 这种值。
+    """
+    if not value:
+        return ""
+    cleaned = str(value).strip()
+    # 去 # 标题符：行首 + 行中（"；"等分隔符后）两种形态
+    cleaned = _MD_HEADING_PREFIX_RE.sub("", cleaned)
+    cleaned = _INLINE_HEADING_RE.sub("", cleaned)
+    # 表格分隔横杠与管道符转空格
+    cleaned = _TABLE_SEP_INLINE_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace("|", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # 清掉首尾残留的分隔符
+    cleaned = cleaned.strip("；;，, ")
+    return cleaned
+
 
 def normalize_multiline_text(value: Any) -> str:
     if value is None:
@@ -268,20 +399,30 @@ def append_rich_markdown_section(lines: list[str], heading: str, content: str) -
 
 
 def append_full_text_section(lines: list[str], payload: dict[str, Any]) -> None:
+    """追加 ## 原文全文 节。
+
+    遵循 CLAUDE.md 核心原则：不得删减原文段落、句子、表格数据。
+    仅做 RAGFlow 友好的轻量清洗（HTML 标签 / QR 描述 / 推广语 / 内网链接），不截断、不合并段落。
+    """
     full_text = normalize_multiline_text(payload.get("提取正文")).strip()
     if not full_text:
         return  # 无原文直接跳过
+    # 先去掉 localhost 内网链接行
     filtered = "\n".join(
         line for line in full_text.splitlines()
         if not re.match(r"^\s*https?://localhost\S*\s*$", line)
     ).strip()
     if not filtered:
         return
+    # 应用 RAGFlow 适配的轻量清洗（仅去噪声，不截断、不去重段落）
+    cleaned = clean_ocr_artifacts(filtered)
+    if not cleaned:
+        return
     lines.extend([
         "---",
         "",
         "## 原文全文",
-        filtered,
+        cleaned,
         "",
     ])
 
@@ -325,7 +466,7 @@ def build_policy_sections(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def build_generic_sections(payload: dict[str, Any]) -> dict[str, str]:
-    preview_text = payload.get("文本预览", "") or ""
+    preview_text = clean_summary_field(payload.get("文本预览", "") or "")
     return {
         "资料摘要": preview_text or "当前尚未提取到可用正文。",
         "抽取说明": payload.get("抽取说明", ""),
@@ -382,11 +523,11 @@ def looks_like_supplier_list_preview(text: str) -> bool:
 
 
 def build_supplier_sections(payload: dict[str, Any]) -> dict[str, str]:
-    company_name = format_supplier_optional_value(payload.get("企业名称", payload.get("主体名称", "")) or payload.get("主体名称", ""))
-    company_type = format_supplier_optional_value(payload.get("企业类别"))
-    business_direction = format_supplier_optional_value(payload.get("主营方向"))
-    core_products = format_supplier_optional_value(payload.get("核心产品"))
-    core_capabilities = format_supplier_optional_value(payload.get("核心能力"))
+    company_name = clean_field_value(format_supplier_optional_value(payload.get("企业名称", payload.get("主体名称", "")) or payload.get("主体名称", "")))
+    company_type = clean_field_value(format_supplier_optional_value(payload.get("企业类别")))
+    business_direction = clean_field_value(format_supplier_optional_value(payload.get("主营方向")))
+    core_products = clean_field_value(format_supplier_optional_value(payload.get("核心产品")))
+    core_capabilities = clean_field_value(format_supplier_optional_value(payload.get("核心能力")))
 
     summary_parts: list[str] = []
     if company_name:
@@ -400,9 +541,9 @@ def build_supplier_sections(payload: dict[str, Any]) -> dict[str, str]:
     if core_capabilities:
         summary_parts.append(f"核心能力：{core_capabilities}")
 
-    preview_text = format_supplier_optional_value(payload.get("文本预览"))
+    preview_text = clean_summary_field(format_supplier_optional_value(payload.get("文本预览")))
     if summary_parts:
-        company_summary = "；".join(summary_parts)
+        company_summary = "；".join(clean_field_value(p) for p in summary_parts)
     elif preview_text and not looks_like_supplier_list_preview(preview_text):
         company_summary = preview_text
     else:
@@ -433,7 +574,7 @@ def build_contact_sections(payload: dict[str, Any]) -> dict[str, str]:
         summary_parts.append(f"单位类型：{unit_type}")
     if contact_clues != "未提取":
         summary_parts.append(f"对接线索：{contact_clues}")
-    unit_summary = "；".join(summary_parts) if summary_parts else payload.get("文本预览", "") or "当前尚未提取到可用正文。"
+    unit_summary = "；".join(summary_parts) if summary_parts else clean_summary_field(payload.get("文本预览", "") or "") or "当前尚未提取到可用正文。"
 
     return {
         "单位名称": unit_name,
@@ -447,8 +588,9 @@ def build_contact_sections(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def build_solution_sections(payload: dict[str, Any]) -> dict[str, str]:
+    summary = clean_summary_field(payload.get("文本预览", "") or "")
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
+        "资料摘要": summary or "当前尚未提取到可用正文。",
         "应用背景": payload.get("所属场景字段", "未提取") or "未提取",
         "解决问题": payload.get("解决问题字段", "未提取") or "未提取",
         "资料形态": payload.get("证据类型字段", "未提取") or "未提取",
@@ -461,19 +603,21 @@ def build_solution_sections(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def build_product_sections(payload: dict[str, Any]) -> dict[str, str]:
+    summary = clean_summary_field(payload.get("文本预览", "") or "")
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
-        "核心用途": format_product_optional_value(payload.get("核心用途字段")),
-        "资料形态": format_product_optional_value(payload.get("产品证据类型字段")),
-        "核心参数": format_product_optional_value(payload.get("核心参数字段")),
-        "适用场景": format_product_optional_value(payload.get("适用场景字段")),
-        "搭配关系": format_product_optional_value(payload.get("搭配关系字段")),
+        "资料摘要": summary or "当前尚未提取到可用正文。",
+        "核心用途": clean_field_value(format_product_optional_value(payload.get("核心用途字段"))),
+        "资料形态": clean_field_value(format_product_optional_value(payload.get("产品证据类型字段"))),
+        "核心参数": clean_field_value(format_product_optional_value(payload.get("核心参数字段"))),
+        "适用场景": clean_field_value(format_product_optional_value(payload.get("适用场景字段"))),
+        "搭配关系": clean_field_value(format_product_optional_value(payload.get("搭配关系字段"))),
     }
 
 
 def build_education_training_sections(payload: dict[str, Any]) -> dict[str, str]:
+    summary = clean_summary_field(payload.get("文本预览", "") or "")
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
+        "资料摘要": summary or "当前尚未提取到可用正文。",
         "培训主题": format_education_optional_value(payload.get("培训主题字段")),
         "适用对象": format_education_optional_value(payload.get("适用对象字段")),
         "培训类型": format_education_optional_value(payload.get("培训类型字段")),
@@ -485,8 +629,9 @@ def build_education_training_sections(payload: dict[str, Any]) -> dict[str, str]
 
 
 def build_procurement_sections(payload: dict[str, Any]) -> dict[str, str]:
+    summary = clean_summary_field(payload.get("文本预览", "") or "")
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
+        "资料摘要": summary or "当前尚未提取到可用正文。",
         "采购方式": payload.get("采购方式字段", "未提取") or "未提取",
         "预算限价": payload.get("预算最高限价字段", "未提取") or "未提取",
         "评分办法": payload.get("评分办法字段", "未提取") or "未提取",
@@ -506,7 +651,7 @@ def build_contract_sections(payload: dict[str, Any]) -> dict[str, str]:
                 parts.append(str(item))
         items_text = "\n".join(parts) if parts else "未提取"
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
+        "资料摘要": clean_summary_field(payload.get("文本预览", "") or "") or "当前尚未提取到可用正文。",
         "合同名称": payload.get("合同名称字段", "未提取") or "未提取",
         "合同编号": payload.get("合同编号字段", "未提取") or "未提取",
         "合同类型": payload.get("合同类型字段", "未提取") or "未提取",
@@ -535,7 +680,7 @@ def build_price_quote_sections(payload: dict[str, Any]) -> dict[str, str]:
     raw_subject = payload.get("报价主体字段", "") or ""
     cleaned_subject = re.sub(r"^[|｜\s]+", "", raw_subject).strip()
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
+        "资料摘要": clean_summary_field(payload.get("文本预览", "") or "") or "当前尚未提取到可用正文。",
         "报价单名称": payload.get("报价单名称字段", "") or "",
         "报价主体": cleaned_subject or "",
         "产品型号价格": items_text,
@@ -561,8 +706,9 @@ def format_industry_knowledge_optional_value(value: Any) -> str:
 
 
 def build_industry_knowledge_sections(payload: dict[str, Any]) -> dict[str, str]:
+    summary = clean_summary_field(payload.get("文本预览", "") or "")
     return {
-        "资料摘要": payload.get("文本预览", "") or "当前尚未提取到可用正文。",
+        "资料摘要": summary or "当前尚未提取到可用正文。",
         "行业领域": format_industry_knowledge_optional_value(payload.get("行业领域字段")),
         "产业链环节": format_industry_knowledge_optional_value(payload.get("产业链环节字段")),
         "市场规模": format_industry_knowledge_optional_value(payload.get("市场规模字段")),
@@ -815,7 +961,7 @@ def is_empty_payload_value(value: Any) -> bool:
     return False
 
 
-def format_markdown_value(value: Any, default: str = "未提取") -> str:
+def format_markdown_value(value: Any, default: str = "") -> str:
     if is_empty_payload_value(value):
         return default
     if isinstance(value, list):
@@ -833,16 +979,26 @@ def build_supplemental_field_lines(template_name: str, payload: dict[str, Any]) 
         value = payload.get(key)
         if is_empty_payload_value(value):
             continue
+        # 跳过占位符值，不输出无意义的"未提取"/"未注明"行
+        if isinstance(value, str) and value.strip() in SUPPLIER_EMPTY_VALUES:
+            continue
         label = FIELD_DISPLAY_LABELS.get(key, key)
+        formatted = format_markdown_value(value)
+        if not formatted:
+            continue
         if isinstance(value, str) and "\n" in value:
             lines.extend([
                 f"### {label}",
                 "",
-                value.strip(),
+                clean_summary_field(value.strip(), max_len=2000),
                 "",
             ])
             continue
-        lines.append(f"- {label}：{format_markdown_value(value)}")
+        # 字段值清洗：去掉 markdown 标题前缀（如"# 商务合作方案"）和表格残留
+        formatted = clean_field_value(formatted)
+        if not formatted:
+            continue
+        lines.append(f"- {label}：{formatted}")
     return lines
 
 
@@ -1056,7 +1212,7 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
     risks = payload.get("风险说明", []) or []
     notes = payload.get("备注", []) or []
     dedup_keys = payload.get("去重主键", []) or []
-    preview_text = payload.get("文本预览", "") or "无"
+    preview_text = clean_summary_field(payload.get("文本预览", "") or "") or "无"
 
     # 兜底清洗：标题里如果混进了 HTML 注释（例如拆分链路的 "<!-- 分片：xxx -->"）或 markdown 标题符号，去掉。
     raw_title = str(payload.get("标题", "") or "").strip()
@@ -1071,6 +1227,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
     lines.append(f"source_path: {normalize_frontmatter_value(payload.get('原始路径'))}")
     lines.append(f"doc_category: {normalize_frontmatter_value(payload.get('文档分类'))}")
     lines.append(f"template: {normalize_frontmatter_value(payload.get('推荐模板'))}")
+    if not is_empty_payload_value(payload.get("生成时间")):
+        lines.append(f"extracted_at: {normalize_frontmatter_value(payload.get('生成时间'))}")
     if not is_empty_payload_value(payload.get("知识库分类")):
         lines.append(f"kb_category: {normalize_frontmatter_value(payload.get('知识库分类'))}")
     if not is_empty_payload_value(payload.get("分类来源")):
@@ -1182,9 +1340,6 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
                 "",
             ])
 
-        for heading, content in build_supplier_deep_sections(payload):
-            if content.strip():
-                append_rich_markdown_section(lines, heading, content)
     elif payload.get("推荐模板") == "单位联系人模板":
         sections = build_contact_sections(payload)
         lines.extend([
@@ -1250,12 +1405,9 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
             # 解决的问题、投入的产品/设备/能力、实施方式、预算、进度与组织方式、结果与效果数据、可复用经验
             ("证据类型", payload.get('证据类型字段')),
         ]
-        sol_field_lines = [f"- {lbl}：{val}" for lbl, val in sol_field_map if not is_empty_payload_value(val)]
+        sol_field_lines = [f"- {lbl}：{clean_field_value(str(val))}" for lbl, val in sol_field_map if not is_empty_payload_value(val) and clean_field_value(str(val))]
         if sol_field_lines:
             lines.extend(["---", "", "## 九、字段提取结果", *sol_field_lines, ""])
-        for heading, content in build_solution_deep_sections(payload):
-            if content.strip():
-                append_rich_markdown_section(lines, heading, content)
     elif payload.get("推荐模板") == "产品设备模板":
         sections = build_product_sections(payload)
         lines.extend([
@@ -1390,8 +1542,6 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
                 *education_field_lines,
                 "",
             ])
-        for heading, content in build_education_training_deep_sections(payload):
-            append_rich_markdown_section(lines, heading, content)
     elif payload.get("推荐模板") == "招标采购文件模板":
         sections = build_procurement_sections(payload)
         lines.extend([
@@ -1523,9 +1673,6 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
         # 行业领域、产业链环节、市场规模、核心玩家、发展趋势
         if industry_field_lines:
             lines.extend(["---", "", "## 七、字段提取结果", *industry_field_lines, ""])
-        for heading, content in build_industry_knowledge_deep_sections(payload):
-            if content.strip():
-                append_rich_markdown_section(lines, heading, content)
     elif payload.get("处理路径") == "素材":
         lines.extend([
             "## 素材信息",
@@ -1541,7 +1688,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
         summary_parts = []
         showed_summary = False
         if payload.get('核心摘要'):
-            summary_parts.append(f"- 核心摘要：{payload['核心摘要']}")
+            cleaned_summary = clean_summary_field(str(payload['核心摘要']))
+            summary_parts.append(f"- 核心摘要：{cleaned_summary}")
             showed_summary = True
         elif preview_text and preview_text != '无':
             summary_parts.append(f"- 文本预览：{preview_text}")
@@ -1556,6 +1704,8 @@ def build_markdown(sample: SampleRecord, payload: dict[str, Any]) -> str:
         if sections['归档建议']:
             lines.extend(["---", "", "## 归档建议", f"- {sections['归档建议']}", ""])
 
+    # CLAUDE.md 核心原则：不得删减原文段落、句子、表格数据。
+    # 摘要/字段节是 RAGFlow 检索锚点，原文全文节是 AI 完整回答时的核心依据，二者并存且互不重复。
     append_full_text_section(lines, payload)
 
     supplemental_lines = build_supplemental_field_lines(payload.get("推荐模板", ""), payload)

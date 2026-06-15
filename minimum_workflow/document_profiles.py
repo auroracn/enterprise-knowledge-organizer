@@ -30,7 +30,7 @@ SUPPLIER_CONTENT_KEYWORDS = (
 )
 CONTRACT_TITLE_KEYWORDS = ("合同", "协议", "购销", "采购合同", "销售合同", "服务合同", "合作协议", "框架协议")
 CONTRACT_CONTENT_KEYWORDS = ("甲方", "乙方", "供方", "需方", "签订日期", "合同编号", "协议双方", "经协商一致", "双方共同遵守", "本合同", "本协议")
-PRICE_QUOTE_TITLE_KEYWORDS = ("报价", "价格", "报价单", "价格表", "报价表", "产品报价", "设备报价")
+PRICE_QUOTE_TITLE_KEYWORDS = ("报价", "价格", "报价单", "价格表", "报价表", "产品报价", "设备报价", "零售价", "零售")
 PRICE_QUOTE_CONTENT_KEYWORDS = ("有效期", "当天有效", "零售指导价", "经销商价格", "阶梯价", "单价", "总价", "报价有效期")
 ENTERPRISE_LIST_TITLE_KEYWORDS = ("企业清单", "企业名录", "企业榜单", "低空经济企业", "链上企业")
 ENTERPRISE_LIST_CONTENT_KEYWORDS = ("整机制造企业", "低空物流企业", "应急救援企业", "运营服务企业", "安全设备企业", "链上企业")
@@ -51,6 +51,10 @@ MEETING_MATERIAL_KEYWORDS = (
     "请勿外传",
     "内部资料",
     "PPT",
+    "纪要",
+    "会议纪要",
+    "定岗定责",
+    "内部会议",
 )
 EVENT_TITLE_KEYWORDS = ("博览会", "展览会", "展会", "会展", "无人机展", "峰会", "论坛", "研讨会", "对接会", "大会", "赛事")
 PROCUREMENT_FILE_KEYWORDS = (
@@ -703,6 +707,16 @@ def infer_document_profile(source_name: str, blocks: list[str]) -> dict[str, str
             "方案/案例", "方案案例模板", "方案/案例资料",
             "编制主体", organization, document_date, version,
             "项目/案例清单类资料，项目名称、实施状态与清单完整性需结合原件复核。",
+            "待审核", title,
+        )
+
+    # 会议纪要/内部会议文件：优先归为方案/案例，避免被产品设备误分类
+    meeting_title_hits = count_title_and_filename_hits(title, source_base_name, MEETING_MATERIAL_KEYWORDS)
+    if meeting_title_hits >= 1 and not any(kw in title for kw in PRODUCT_TITLE_KEYWORDS):
+        return _build_profile_dict(
+            "方案/案例", "方案案例模板", "方案/案例资料",
+            "编制主体", organization, document_date, version,
+            "会议/纪要类资料，决议事项、参会人员与后续行动项需结合原件复核。",
             "待审核", title,
         )
 

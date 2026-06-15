@@ -838,7 +838,17 @@ def normalize_excel_cell(value: Any) -> str:
         return value.strftime("%Y-%m-%d")
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value).strip()
+    text = str(value).strip()
+    # WPS/Excel 内嵌图片在 openpyxl 下只读到 =DISPIMG("ID_...",n) 公式串，
+    # 对入库检索无意义且污染表格，替换为可读占位符保留"此处有图"的信号。
+    if text.startswith("=DISPIMG(") or text.startswith("=_xlfn.DISPIMG("):
+        return "[嵌入图片]"
+    # 单元格内换行会把一条记录拆成多行、破坏 Markdown 表格结构，
+    # 统一转成 <br> 让整行保持在同一张表格行内。
+    if "\n" in text or "\r" in text:
+        parts = [seg.strip() for seg in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+        text = "<br>".join(seg for seg in parts if seg)
+    return text
 
 
 def trim_excel_row(values: tuple[Any, ...]) -> list[str]:

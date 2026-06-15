@@ -185,8 +185,6 @@ python -m minimum_workflow.cli --source-dir <源目录> \
 │   └── test_*.py                        # 单元测试
 ├── config/
 │   └── minimum_workflow_contract.json   # 字段契约定义
-├── ragflow_config_example.json          # RAGFlow 配置示例
-└── test_ragflow_integration.py          # RAGFlow 集成测试
 ```
 
 ## 验收标准
